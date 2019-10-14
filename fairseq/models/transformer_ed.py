@@ -29,43 +29,8 @@ DEFAULT_MAX_TARGET_POSITIONS = 1024
 
 @register_model('transformer_ed')
 class TransformerEDModel(TransformerModel):
-    """
-    Transformer model from `"Attention Is All You Need" (Vaswani, et al, 2017)
-    <https://arxiv.org/abs/1706.03762>`_.
-
-    Args:
-        encoder (TransformerEncoder): the encoder
-        decoder (TransformerDecoder): the decoder
-
-    The Transformer model provides the following named architectures and
-    command-line arguments:
-
-    .. argparse::
-        :ref: fairseq.models.transformer_parser
-        :prog:
-    """
-
-    @classmethod
-    def hub_models(cls):
-        # fmt: off
-        return {
-            'transformer.wmt14.en-fr': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt14.en-fr.joined-dict.transformer.tar.bz2',
-            'transformer.wmt16.en-de': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt16.en-de.joined-dict.transformer.tar.bz2',
-            'transformer.wmt18.en-de': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt18.en-de.ensemble.tar.gz',
-            'transformer.wmt19.en-de': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-de.joined-dict.ensemble.tar.gz',
-            'transformer.wmt19.en-ru': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-ru.ensemble.tar.gz',
-            'transformer.wmt19.de-en': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.de-en.joined-dict.ensemble.tar.gz',
-            'transformer.wmt19.ru-en': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.ru-en.ensemble.tar.gz',
-            'transformer.wmt19.en-de.single_model': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-de.joined-dict.single_model.tar.gz',
-            'transformer.wmt19.en-ru.single_model': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.en-ru.single_model.tar.gz',
-            'transformer.wmt19.de-en.single_model': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.de-en.joined-dict.single_model.tar.gz',
-            'transformer.wmt19.ru-en.single_model': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt19.ru-en.single_model.tar.gz',
-        }
-        # fmt: on
-
     def __init__(self, encoder, decoder):
         super().__init__(encoder, decoder)
-        self.supports_align_args = True
 
     @staticmethod
     def add_args(parser):
@@ -128,6 +93,7 @@ class TransformerEDModel(TransformerModel):
         parser.add_argument('--layer-wise-attention', default=False, action='store_true',
                             help='perform layer-wise attention (cross-attention or cross+self-attention)')
         # fmt: on
+
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
         return TransformerEDDecoder(
@@ -155,9 +121,9 @@ class TransformerEDDecoder(TransformerDecoder):
 
         embed_dim = args.decoder_embed_dim
 
-        self.efficient_decoding = False
+        self.efficient_decoding = True
         self.oracle = True
-        self.tgt_vocab_size = 500
+        self.tgt_vocab_size = 200
         self.use_dot = False
 
         self.num_embeddings = len(dictionary)

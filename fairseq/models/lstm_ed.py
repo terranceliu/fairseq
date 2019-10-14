@@ -187,7 +187,7 @@ class LSTMEDDecoder(LSTMDecoder):
 
         self.efficient_decoding = True
         self.oracle = False
-        self.tgt_vocab_size = 1000
+        self.tgt_vocab_size = 200
         self.use_dot = False
 
         self.num_embeddings = len(dictionary)

@@ -154,7 +154,7 @@ class SequenceGenerator(object):
         new_order = new_order.to(src_tokens.device).long()
         encoder_outs = model.reorder_encoder_out(encoder_outs, new_order)
 
-        target = sample['net_input']['target']
+        target = sample['target']
         target = target[new_order]
 
         # initialize buffers
