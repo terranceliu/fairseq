@@ -131,7 +131,6 @@ class SequenceGenerator(object):
             if k not in ['prev_output_tokens', 'target']
         }
 
-
         src_tokens = encoder_input['src_tokens']
         src_lengths = (src_tokens.ne(self.eos) & src_tokens.ne(self.pad)).long().sum(dim=1)
         input_size = src_tokens.size()
@@ -296,12 +295,8 @@ class SequenceGenerator(object):
                 encoder_outs = model.reorder_encoder_out(encoder_outs, reorder_state)
                 target = target[reorder_state]
 
-            # import pdb
-            # if encoder_outs[0]['encoder_out'][0].shape[1] != target.shape[0]:
-            #     pdb.set_trace()
-
             lprobs, avg_attn_scores = model.forward_decoder(
-                tokens[:, :step + 1], target, encoder_outs, temperature=self.temperature,
+                tokens[:, :step + 1], encoder_outs, temperature=self.temperature, target=target
             )
 
             lprobs[:, self.pad] = -math.inf  # never select pad
@@ -416,12 +411,6 @@ class SequenceGenerator(object):
             assert num_remaining_sent >= 0
             if num_remaining_sent == 0:
                 break
-
-            if step >= max_len:
-                step_temp = step
-                import pdb
-                pdb.set_trace()
-
             assert step < max_len
 
             if len(finalized_sents) > 0:
@@ -555,16 +544,16 @@ class EnsembleModel(torch.nn.Module):
         return [model.encoder(**encoder_input) for model in self.models]
 
     @torch.no_grad()
-    def forward_decoder(self, tokens, target, encoder_outs, temperature=1.):
+    def forward_decoder(self, tokens, encoder_outs, temperature=1., target=None):
         if len(self.models) == 1:
             return self._decode_one(
                 tokens,
                 self.models[0],
-                target,
                 encoder_outs[0] if self.has_encoder() else None,
                 self.incremental_states,
                 log_probs=True,
                 temperature=temperature,
+                target=target,
             )
 
         log_probs = []
@@ -573,11 +562,11 @@ class EnsembleModel(torch.nn.Module):
             probs, attn = self._decode_one(
                 tokens,
                 model,
-                target,
                 encoder_out,
                 self.incremental_states,
                 log_probs=True,
                 temperature=temperature,
+                target=target,
             )
             log_probs.append(probs)
             if attn is not None:
@@ -591,15 +580,15 @@ class EnsembleModel(torch.nn.Module):
         return avg_probs, avg_attn
 
     def _decode_one(
-        self, tokens, model, target, encoder_out, incremental_states, log_probs,
-        temperature=1.,
+        self, tokens, model, encoder_out, incremental_states, log_probs,
+        temperature=1., target=None,
     ):
         if self.incremental_states is not None:
             decoder_out = list(model.forward_decoder(
-                tokens, target, encoder_out=encoder_out, incremental_state=self.incremental_states[model],
+                tokens, encoder_out=encoder_out, incremental_state=self.incremental_states[model], target=target,
             ))
         else:
-            decoder_out = list(model.forward_decoder(tokens, target, encoder_out=encoder_out))
+            decoder_out = list(model.forward_decoder(tokens, encoder_out=encoder_out, target=target))
         decoder_out[0] = decoder_out[0][:, -1:, :]
         if temperature != 1.:
             decoder_out[0].div_(temperature)

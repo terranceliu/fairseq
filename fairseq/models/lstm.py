@@ -171,7 +171,7 @@ class LSTMModel(FairseqEncoderDecoderModel):
         )
         return cls(encoder, decoder)
 
-    def forward(self, src_tokens, src_lengths, prev_output_tokens, target, **kwargs):
+    def forward(self, src_tokens, src_lengths, prev_output_tokens, **kwargs):
         """
         Run the forward pass for an encoder-decoder model.
 
@@ -195,7 +195,7 @@ class LSTMModel(FairseqEncoderDecoderModel):
                 - a dictionary with any model-specific outputs
         """
         encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
-        decoder_out = self.decoder(prev_output_tokens, target, encoder_out=encoder_out, **kwargs)
+        decoder_out = self.decoder(prev_output_tokens, encoder_out=encoder_out, **kwargs)
         return decoder_out
 
 class LSTMEncoder(FairseqEncoder):
@@ -233,7 +233,7 @@ class LSTMEncoder(FairseqEncoder):
         if bidirectional:
             self.output_units *= 2
 
-    def forward(self, src_tokens, src_lengths):
+    def forward(self, src_tokens, src_lengths, **kwargs):
         if self.left_pad:
             # nn.utils.rnn.pack_padded_sequence requires right-padding;
             # convert left-padding to right-padding
@@ -396,7 +396,7 @@ class LSTMDecoder(FairseqIncrementalDecoder):
             self.fc_out = Linear(out_embed_dim, embed_dim, dropout=dropout_out)
 
 
-    def forward(self, prev_output_tokens, target, encoder_out, incremental_state=None):
+    def forward(self, prev_output_tokens, encoder_out, incremental_state=None, target=None):
         encoder_padding_mask = encoder_out['encoder_padding_mask']
         encoder_out = encoder_out['encoder_out']
 
@@ -485,58 +485,58 @@ class LSTMDecoder(FairseqIncrementalDecoder):
                 x = F.linear(x, self.embed_tokens.weight)
             else:
                 x = self.fc_out(x)
-
-        if self.efficient_decoding:
-            tgt_vocab = []
-            for i in range(target.shape[0]):
-                tgt_tokens = torch.unique(target[i])
-                if self.oracle:
-                    vocab_tokens = torch.ones(self.tgt_vocab_size, dtype=torch.long).cuda()
-                    vocab_tokens[:tgt_tokens.shape[0]] = tgt_tokens
-                elif tgt_tokens.shape[0] >= self.tgt_vocab_size:
-                    vocab_tokens = tgt_tokens[:self.tgt_vocab_size]
-                else:
-                    # OLD - slower
-                    # list1 = tgt_tokens.cpu().numpy()
-                    # list2 = np.arange(self.tgt_vocab_size)
-                    # list3 = np.setdiff1d(list2, list1)
-                    # list4 = np.concatenate((list1, list3))[:self.tgt_vocab_size]
-                    # vocab_tokens = torch.from_numpy(list4).cuda()
-
-                    # get tokens from top_tokens not in tgt_tokens
-                    ix = self.top_tokens .view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
-                    extra_tokens = self.top_tokens[ix]
-                    vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
-
-                tgt_vocab.append(vocab_tokens)
-                if len(vocab_tokens) != self.tgt_vocab_size:
-                    pdb.set_trace()
-
-            tgt_vocab = torch.stack(tgt_vocab)
-
-            if self.use_dot:
-                tgt_vocab_embeddings = self.embed_tokens(tgt_vocab)
-                tgt_vocab_embeddings = tgt_vocab_embeddings.view(len(tgt_vocab_embeddings), self.embed_dim, self.tgt_vocab_size)
-
-                x = torch.bmm(x, tgt_vocab_embeddings)
-                x_final = torch.zeros((x.shape[0], x.shape[1], self.num_embeddings)).cuda()
-                x_final[:] = -float('inf')
-
-                helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
-                helper_ix = torch.from_numpy(helper_ix).cuda()
-
-                x_final[helper_ix, :, tgt_vocab] = x.view(x.shape[0], x.shape[2], x.shape[1])
-            else:
-                x_final = torch.zeros(x.shape).cuda()
-                x_final[:] = -float('inf')
-
-                helper_ix = torch.arange(tgt_vocab.shape[0]).unsqueeze(0).T.expand(tgt_vocab.shape)
-                # helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
-                # helper_ix = torch.from_numpy(helper_ix).cuda()
-
-                x_final[helper_ix, :, tgt_vocab] = x[helper_ix, :, tgt_vocab]
-
-            x = x_final
+        #
+        # if self.efficient_decoding:
+        #     tgt_vocab = []
+        #     for i in range(target.shape[0]):
+        #         tgt_tokens = torch.unique(target[i])
+        #         if self.oracle:
+        #             vocab_tokens = torch.ones(self.tgt_vocab_size, dtype=torch.long).cuda()
+        #             vocab_tokens[:tgt_tokens.shape[0]] = tgt_tokens
+        #         elif tgt_tokens.shape[0] >= self.tgt_vocab_size:
+        #             vocab_tokens = tgt_tokens[:self.tgt_vocab_size]
+        #         else:
+        #             # OLD - slower
+        #             # list1 = tgt_tokens.cpu().numpy()
+        #             # list2 = np.arange(self.tgt_vocab_size)
+        #             # list3 = np.setdiff1d(list2, list1)
+        #             # list4 = np.concatenate((list1, list3))[:self.tgt_vocab_size]
+        #             # vocab_tokens = torch.from_numpy(list4).cuda()
+        #
+        #             # get tokens from top_tokens not in tgt_tokens
+        #             ix = self.top_tokens .view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
+        #             extra_tokens = self.top_tokens[ix]
+        #             vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
+        #
+        #         tgt_vocab.append(vocab_tokens)
+        #         if len(vocab_tokens) != self.tgt_vocab_size:
+        #             pdb.set_trace()
+        #
+        #     tgt_vocab = torch.stack(tgt_vocab)
+        #
+        #     if self.use_dot:
+        #         tgt_vocab_embeddings = self.embed_tokens(tgt_vocab)
+        #         tgt_vocab_embeddings = tgt_vocab_embeddings.view(len(tgt_vocab_embeddings), self.embed_dim, self.tgt_vocab_size)
+        #
+        #         x = torch.bmm(x, tgt_vocab_embeddings)
+        #         x_final = torch.zeros((x.shape[0], x.shape[1], self.num_embeddings)).cuda()
+        #         x_final[:] = -float('inf')
+        #
+        #         helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
+        #         helper_ix = torch.from_numpy(helper_ix).cuda()
+        #
+        #         x_final[helper_ix, :, tgt_vocab] = x.view(x.shape[0], x.shape[2], x.shape[1])
+        #     else:
+        #         x_final = torch.zeros(x.shape).cuda()
+        #         x_final[:] = -float('inf')
+        #
+        #         helper_ix = torch.arange(tgt_vocab.shape[0]).unsqueeze(0).T.expand(tgt_vocab.shape)
+        #         # helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
+        #         # helper_ix = torch.from_numpy(helper_ix).cuda()
+        #
+        #         x_final[helper_ix, :, tgt_vocab] = x[helper_ix, :, tgt_vocab]
+        #
+        #     x = x_final
 
         return x, attn_scores
 

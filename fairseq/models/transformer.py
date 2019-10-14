@@ -8,6 +8,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 from fairseq import options, utils
 from fairseq.models import (
@@ -26,7 +27,6 @@ from fairseq.modules import (
     TransformerEncoderLayer,
 )
 
-import numpy as np
 import pdb
 
 DEFAULT_MAX_SOURCE_POSITIONS = 1024
@@ -239,7 +239,6 @@ class TransformerAlignModel(TransformerModel):
     def forward_decoder(
         self,
         prev_output_tokens,
-        target,
         encoder_out=None,
         incremental_state=None,
         features_only=False,
@@ -248,7 +247,6 @@ class TransformerAlignModel(TransformerModel):
         attn_args = {'alignment_layer': self.alignment_layer, 'alignment_heads': self.alignment_heads}
         decoder_out = self.decoder(
             prev_output_tokens,
-            target,
             encoder_out,
             **attn_args,
             **extra_args,
@@ -313,7 +311,7 @@ class TransformerEncoder(FairseqEncoder):
         x = F.dropout(x, p=self.dropout, training=self.training)
         return x, embed
 
-    def forward(self, src_tokens, src_lengths, target=None, cls_input=None, return_all_hiddens=False):
+    def forward(self, src_tokens, src_lengths, cls_input=None, return_all_hiddens=False, **kwargs ):
         """
         Args:
             src_tokens (LongTensor): tokens in the source language of shape
@@ -495,7 +493,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         self.efficient_decoding = True
         self.use_dot = False
         self.oracle = False
-        self.tgt_vocab_size = 500 #tgt_vocab_size
+        self.tgt_vocab_size = 200 #tgt_vocab_size
 
         self.num_embeddings = len(dictionary)
         self.embed_dim = embed_dim
@@ -507,10 +505,10 @@ class TransformerDecoder(FairseqIncrementalDecoder):
     def forward(
         self,
         prev_output_tokens,
-        target,
         encoder_out=None,
         incremental_state=None,
         features_only=False,
+        target=None,
         **extra_args,
     ):
         """
@@ -530,7 +528,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 - a dictionary with any model-specific outputs
         """
         x, extra = self.extract_features(
-            prev_output_tokens, target, encoder_out, incremental_state, **extra_args,
+            prev_output_tokens, encoder_out, incremental_state, **extra_args,
         )
         if not features_only:
             x = self.output_layer(x)
@@ -594,7 +592,6 @@ class TransformerDecoder(FairseqIncrementalDecoder):
     def extract_features(
         self,
         prev_output_tokens,
-        target,
         encoder_out=None,
         incremental_state=None,
         full_context_alignment=False,
@@ -649,11 +646,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         x = x.transpose(0, 1)
 
         self_attn_padding_mask = prev_output_tokens.eq(self.padding_idx)
-
         if not self_attn_padding_mask.any() and not self.cross_self_attention:
             self_attn_padding_mask = None
-        # if self_attn_padding_mask is not None:
-        #     pdb.set_trace()
 
         # decoder layers
         attn = None
