@@ -128,8 +128,9 @@ class SequenceGenerator(object):
         # separately, but SequenceGenerator directly calls model.encoder
         encoder_input = {
             k: v for k, v in sample['net_input'].items()
-            if k != 'prev_output_tokens'
+            if k not in ['prev_output_tokens', 'target']
         }
+
 
         src_tokens = encoder_input['src_tokens']
         src_lengths = (src_tokens.ne(self.eos) & src_tokens.ne(self.pad)).long().sum(dim=1)
@@ -153,6 +154,9 @@ class SequenceGenerator(object):
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
         new_order = new_order.to(src_tokens.device).long()
         encoder_outs = model.reorder_encoder_out(encoder_outs, new_order)
+
+        target = sample['net_input']['target']
+        target = target[new_order]
 
         # initialize buffers
         scores = src_tokens.new(bsz * beam_size, max_len + 1).float().fill_(0)
@@ -290,9 +294,14 @@ class SequenceGenerator(object):
                     reorder_state.view(-1, beam_size).add_(corr.unsqueeze(-1) * beam_size)
                 model.reorder_incremental_state(reorder_state)
                 encoder_outs = model.reorder_encoder_out(encoder_outs, reorder_state)
+                target = target[reorder_state]
+
+            # import pdb
+            # if encoder_outs[0]['encoder_out'][0].shape[1] != target.shape[0]:
+            #     pdb.set_trace()
 
             lprobs, avg_attn_scores = model.forward_decoder(
-                tokens[:, :step + 1], encoder_outs, temperature=self.temperature,
+                tokens[:, :step + 1], target, encoder_outs, temperature=self.temperature,
             )
 
             lprobs[:, self.pad] = -math.inf  # never select pad
@@ -407,6 +416,12 @@ class SequenceGenerator(object):
             assert num_remaining_sent >= 0
             if num_remaining_sent == 0:
                 break
+
+            if step >= max_len:
+                step_temp = step
+                import pdb
+                pdb.set_trace()
+
             assert step < max_len
 
             if len(finalized_sents) > 0:
@@ -540,11 +555,12 @@ class EnsembleModel(torch.nn.Module):
         return [model.encoder(**encoder_input) for model in self.models]
 
     @torch.no_grad()
-    def forward_decoder(self, tokens, encoder_outs, temperature=1.):
+    def forward_decoder(self, tokens, target, encoder_outs, temperature=1.):
         if len(self.models) == 1:
             return self._decode_one(
                 tokens,
                 self.models[0],
+                target,
                 encoder_outs[0] if self.has_encoder() else None,
                 self.incremental_states,
                 log_probs=True,
@@ -557,6 +573,7 @@ class EnsembleModel(torch.nn.Module):
             probs, attn = self._decode_one(
                 tokens,
                 model,
+                target,
                 encoder_out,
                 self.incremental_states,
                 log_probs=True,
@@ -574,15 +591,15 @@ class EnsembleModel(torch.nn.Module):
         return avg_probs, avg_attn
 
     def _decode_one(
-        self, tokens, model, encoder_out, incremental_states, log_probs,
+        self, tokens, model, target, encoder_out, incremental_states, log_probs,
         temperature=1.,
     ):
         if self.incremental_states is not None:
             decoder_out = list(model.forward_decoder(
-                tokens, encoder_out=encoder_out, incremental_state=self.incremental_states[model],
+                tokens, target, encoder_out=encoder_out, incremental_state=self.incremental_states[model],
             ))
         else:
-            decoder_out = list(model.forward_decoder(tokens, encoder_out=encoder_out))
+            decoder_out = list(model.forward_decoder(tokens, target, encoder_out=encoder_out))
         decoder_out[0] = decoder_out[0][:, -1:, :]
         if temperature != 1.:
             decoder_out[0].div_(temperature)

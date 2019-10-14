@@ -26,6 +26,9 @@ from fairseq.modules import (
     TransformerEncoderLayer,
 )
 
+import numpy as np
+import pdb
+
 DEFAULT_MAX_SOURCE_POSITIONS = 1024
 DEFAULT_MAX_TARGET_POSITIONS = 1024
 
@@ -236,6 +239,7 @@ class TransformerAlignModel(TransformerModel):
     def forward_decoder(
         self,
         prev_output_tokens,
+        target,
         encoder_out=None,
         incremental_state=None,
         features_only=False,
@@ -244,6 +248,7 @@ class TransformerAlignModel(TransformerModel):
         attn_args = {'alignment_layer': self.alignment_layer, 'alignment_heads': self.alignment_heads}
         decoder_out = self.decoder(
             prev_output_tokens,
+            target,
             encoder_out,
             **attn_args,
             **extra_args,
@@ -308,7 +313,7 @@ class TransformerEncoder(FairseqEncoder):
         x = F.dropout(x, p=self.dropout, training=self.training)
         return x, embed
 
-    def forward(self, src_tokens, src_lengths, cls_input=None, return_all_hiddens=False):
+    def forward(self, src_tokens, src_lengths, target=None, cls_input=None, return_all_hiddens=False):
         """
         Args:
             src_tokens (LongTensor): tokens in the source language of shape
@@ -487,9 +492,22 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         else:
             self.layer_norm = None
 
+        self.efficient_decoding = True
+        self.use_dot = False
+        self.oracle = False
+        self.tgt_vocab_size = 500 #tgt_vocab_size
+
+        self.num_embeddings = len(dictionary)
+        self.embed_dim = embed_dim
+        self.top_tokens = torch.arange(self.tgt_vocab_size).cuda()
+
+        # if self.efficient_decoding and self.use_dot:
+        #     self.fc_out = Linear(out_embed_dim, embed_dim, dropout=self.dropout)
+
     def forward(
         self,
         prev_output_tokens,
+        target,
         encoder_out=None,
         incremental_state=None,
         features_only=False,
@@ -512,15 +530,71 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 - a dictionary with any model-specific outputs
         """
         x, extra = self.extract_features(
-            prev_output_tokens, encoder_out, incremental_state, **extra_args,
+            prev_output_tokens, target, encoder_out, incremental_state, **extra_args,
         )
         if not features_only:
             x = self.output_layer(x)
+
+            if self.efficient_decoding:
+                tgt_vocab = []
+                for i in range(target.shape[0]):
+                    tgt_tokens = torch.unique(target[i])
+                    if self.oracle:
+                        vocab_tokens = torch.ones(self.tgt_vocab_size, dtype=torch.long).cuda()
+                        vocab_tokens[:tgt_tokens.shape[0]] = tgt_tokens
+                    elif tgt_tokens.shape[0] >= self.tgt_vocab_size:
+                        vocab_tokens = tgt_tokens[:self.tgt_vocab_size]
+                    else:
+                        # OLD - slower
+                        # list1 = tgt_tokens.cpu().numpy()
+                        # list2 = np.arange(self.tgt_vocab_size)
+                        # list3 = np.setdiff1d(list2, list1)
+                        # list4 = np.concatenate((list1, list3))[:self.tgt_vocab_size]
+                        # vocab_tokens = torch.from_numpy(list4).cuda()
+
+                        # get tokens from top_tokens not in tgt_tokens
+                        ix = self.top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
+                        extra_tokens = self.top_tokens[ix]
+                        vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
+
+                    tgt_vocab.append(vocab_tokens)
+                    if len(vocab_tokens) != self.tgt_vocab_size:
+                        pdb.set_trace()
+
+                tgt_vocab = torch.stack(tgt_vocab)
+
+                if self.use_dot:
+                    tgt_vocab_embeddings = self.embed_tokens(tgt_vocab)
+                    tgt_vocab_embeddings = tgt_vocab_embeddings.view(len(tgt_vocab_embeddings), self.embed_dim,
+                                                                     self.tgt_vocab_size)
+
+                    x = torch.bmm(x, tgt_vocab_embeddings)
+                    x_final = torch.zeros((x.shape[0], x.shape[1], self.num_embeddings)).cuda()
+                    x_final[:] = -float('inf')
+
+                    helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
+                    helper_ix = torch.from_numpy(helper_ix).cuda()
+
+                    x_final[helper_ix, :, tgt_vocab] = x.view(x.shape[0], x.shape[2], x.shape[1])
+                else:
+                    x_final = torch.zeros(x.shape).cuda()
+                    # x_final[:] = -float('inf')
+                    x_final[:] = x.min()
+
+                    helper_ix = torch.arange(tgt_vocab.shape[0]).unsqueeze(0).T.expand(tgt_vocab.shape)
+                    # helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
+                    # helper_ix = torch.from_numpy(helper_ix).cuda()
+
+                    x_final[helper_ix, :, tgt_vocab] = x[helper_ix, :, tgt_vocab]
+
+                x = x_final
+        # pdb.set_trace()
         return x, extra
 
     def extract_features(
         self,
         prev_output_tokens,
+        target,
         encoder_out=None,
         incremental_state=None,
         full_context_alignment=False,
@@ -575,8 +649,11 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         x = x.transpose(0, 1)
 
         self_attn_padding_mask = prev_output_tokens.eq(self.padding_idx)
+
         if not self_attn_padding_mask.any() and not self.cross_self_attention:
             self_attn_padding_mask = None
+        # if self_attn_padding_mask is not None:
+        #     pdb.set_trace()
 
         # decoder layers
         attn = None

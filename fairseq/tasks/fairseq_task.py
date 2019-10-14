@@ -242,6 +242,8 @@ class FairseqTask(object):
                   gradient
                 - logging outputs to display while training
         """
+        sample['net_input']['target'] = sample['target']
+
         model.train()
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
@@ -250,12 +252,16 @@ class FairseqTask(object):
         return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
+        sample['net_input']['target'] = sample['target']
+
         model.eval()
         with torch.no_grad():
             loss, sample_size, logging_output = criterion(model, sample)
         return loss, sample_size, logging_output
 
     def inference_step(self, generator, models, sample, prefix_tokens=None):
+        sample['net_input']['target'] = sample['target']
+
         with torch.no_grad():
             return generator.generate(models, sample, prefix_tokens=prefix_tokens)
 
