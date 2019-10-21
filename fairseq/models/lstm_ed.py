@@ -169,11 +169,12 @@ class LSTMEDModel(LSTMModel):
                 options.eval_str_list(args.adaptive_softmax_cutoff, type=int)
                 if args.criterion == 'adaptive_loss' else None
             ),
+            tgt_vocab_size = args.tgt_vocab_size,
         )
         return cls(encoder, decoder)
 
     def get_targets(self, sample, net_output):
-        if self.decoder.efficient_decoding and self.decoder.use_dot:
+        if self.decoder.efficient_decoding:
             return sample['target_mapped']
         else:
             return super().get_targets(sample, net_output)
@@ -185,48 +186,31 @@ class LSTMEDDecoder(LSTMDecoder):
         num_layers=1, dropout_in=0.1, dropout_out=0.1, attention=True,
         encoder_output_units=512, pretrained_embed=None,
         share_input_output_embed=False, adaptive_softmax_cutoff=None,
+        tgt_vocab_size=None,
     ):
         super().__init__(dictionary, embed_dim=embed_dim, hidden_size=hidden_size, out_embed_dim=out_embed_dim,
                          num_layers=num_layers, dropout_in=dropout_in, dropout_out=dropout_out, attention=attention,
                          encoder_output_units=encoder_output_units, pretrained_embed=pretrained_embed,
                          share_input_output_embed=share_input_output_embed, adaptive_softmax_cutoff=adaptive_softmax_cutoff)
 
-        self.efficient_decoding = True
-        self.oracle = False
-        self.tgt_vocab_size = 200
-        self.use_dot = False
+        self.tgt_vocab_size = tgt_vocab_size
 
-        if self.efficient_decoding and self.use_dot:
+        self.efficient_decoding = False
+        if self.tgt_vocab_size is not None:
+            self.efficient_decoding = True
+
+        if self.efficient_decoding:
             self.fc_out = Linear(out_embed_dim, embed_dim, dropout=dropout_out)
-
-        self.fc_out_dot = Linear(self.tgt_vocab_size, self.tgt_vocab_size, dropout=dropout_out)
 
     def forward(self, prev_output_tokens, encoder_out, incremental_state=None, target_vocab=None):
         x, attn_scores = super().forward(prev_output_tokens, encoder_out, incremental_state=incremental_state, target=None)
 
         if self.efficient_decoding:
-            if self.use_dot:
-                tgt_vocab_embeddings = self.embed_tokens(target_vocab)
-                tgt_vocab_embeddings = tgt_vocab_embeddings.permute(0, 2, 1)
-                x = torch.bmm(x, tgt_vocab_embeddings)
-                x = self.fc_out_dot(x)
-
-                # x_final = torch.zeros((x.shape[0], x.shape[1], self.embed_tokens.num_embeddings)).cuda()
-                # x_final[:] = -float('inf')
-                # helper_ix = torch.arange(target_vocab.shape[0]).unsqueeze(0).T.expand(target_vocab.shape)
-                # x_final[helper_ix, :, target_vocab] = x.permute(0, 2, 1)
-                # x = x_final
-            else:
-                x_final = torch.zeros(x.shape).cuda()
-                x_final[:] = -float('inf')
-
-                helper_ix = torch.arange(target_vocab.shape[0]).unsqueeze(0).T.expand(target_vocab.shape)
-
-                x_final[helper_ix, :, target_vocab] = x[helper_ix, :, target_vocab]
-                x = x_final
+            tgt_vocab_embeddings = self.embed_tokens(target_vocab)
+            tgt_vocab_embeddings = tgt_vocab_embeddings.permute(0, 2, 1)
+            x = torch.bmm(x, tgt_vocab_embeddings)
 
         return x, attn_scores
-
 
 @register_model_architecture('lstm_ed', 'lstm_ed')
 def base_architecture(args):

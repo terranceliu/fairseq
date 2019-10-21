@@ -101,10 +101,11 @@ class TransformerEDModel(TransformerModel):
             tgt_dict,
             embed_tokens,
             no_encoder_attn=getattr(args, 'no_cross_attention', False),
+            tgt_vocab_size=args.tgt_vocab_size,
         )
 
     def get_targets(self, sample, net_output):
-        if self.decoder.efficient_decoding and self.decoder.use_dot:
+        if self.decoder.efficient_decoding:
             return sample['target_mapped']
         else:
             return super().get_targets(sample, net_output)
@@ -122,18 +123,17 @@ class TransformerEDDecoder(TransformerDecoder):
             (default: False).
     """
 
-    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False):
+    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False, tgt_vocab_size=None,):
         super().__init__(args, dictionary, embed_tokens, no_encoder_attn=no_encoder_attn)
 
-        embed_dim = args.decoder_embed_dim
+        self.tgt_vocab_size = tgt_vocab_size
 
-        self.efficient_decoding = True
-        self.oracle = False
-        self.tgt_vocab_size = 200
-        self.use_dot = True
+        self.efficient_decoding = False
+        if self.tgt_vocab_size is not None:
+            self.efficient_decoding = True
 
     def output_layer(self, features, **kwargs):
-        if self.efficient_decoding and self.use_dot:
+        if self.efficient_decoding:
             return features
 
         """Project features to the vocabulary size."""
@@ -178,18 +178,9 @@ class TransformerEDDecoder(TransformerDecoder):
             x = self.output_layer(x)
 
             if self.efficient_decoding:
-                if self.use_dot:
-                    tgt_vocab_embeddings = self.embed_tokens(target_vocab)
-                    tgt_vocab_embeddings = tgt_vocab_embeddings.permute(0, 2, 1)
-                    x = torch.bmm(x, tgt_vocab_embeddings)
-                else:
-                    x_final = torch.zeros(x.shape).cuda()
-                    x_final[:] = x.min()
-
-                    helper_ix = torch.arange(target_vocab.shape[0]).unsqueeze(0).T.expand(target_vocab.shape)
-
-                    x_final[helper_ix, :, target_vocab] = x[helper_ix, :, target_vocab]
-                    x = x_final
+                tgt_vocab_embeddings = self.embed_tokens(target_vocab)
+                tgt_vocab_embeddings = tgt_vocab_embeddings.permute(0, 2, 1)
+                x = torch.bmm(x, tgt_vocab_embeddings)
 
         return x, extra
 

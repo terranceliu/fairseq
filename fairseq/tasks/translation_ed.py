@@ -28,7 +28,7 @@ def load_langpair_dataset(
     combine, dataset_impl, upsample_primary,
     left_pad_source, left_pad_target, max_source_positions,
     max_target_positions, prepend_bos=False, load_alignments=False,
-    tgt_vocab_size=None,
+    tgt_vocab_size=None, perfect_oracle=False,
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
@@ -93,6 +93,7 @@ def load_langpair_dataset(
         max_target_positions=max_target_positions,
         align_dataset=align_dataset,
         tgt_vocab_size=tgt_vocab_size,
+        perfect_oracle=perfect_oracle,
     )
 
 @register_task('translation_ed')
@@ -145,6 +146,8 @@ class TranslationEDTask(TranslationTask):
                             help='amount to upsample primary dataset')
         parser.add_argument('--tgt-vocab-size', default=None, type=int,
                             help='target vocab size of efficient decoding')
+        parser.add_argument('--perfect_oracle', action='store_true',
+                            help='perfect oracle')
         # fmt: on
 
     def __init__(self, args, src_dict, tgt_dict):
@@ -168,6 +171,7 @@ class TranslationEDTask(TranslationTask):
             max_target_positions=self.args.max_target_positions,
             load_alignments=self.args.load_alignments,
             tgt_vocab_size=self.args.tgt_vocab_size,
+            perfect_oracle=self.args.perfect_oracle,
         )
 
     # def inference_step(self, generator, models, sample, prefix_tokens=None):

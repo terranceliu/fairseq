@@ -63,15 +63,15 @@ def collate(
         tgt_lengths = torch.LongTensor([s['target'].numel() for s in samples]).index_select(0, sort_order)
         ntokens = sum(len(s['target']) for s in samples)
 
-        # if input_feeding:
-        #     # we create a shifted version of targets for feeding the
-        #     # previous output token(s) into the next decoder step
-        #     prev_output_tokens = merge(
-        #         'target',
-        #         left_pad=left_pad_target,
-        #         move_eos_to_beginning=True,
-        #     )
-        #     prev_output_tokens = prev_output_tokens.index_select(0, sort_order)
+        if input_feeding:
+            # we create a shifted version of targets for feeding the
+            # previous output token(s) into the next decoder step
+            prev_output_tokens = merge(
+                'target',
+                left_pad=left_pad_target,
+                move_eos_to_beginning=True,
+            )
+            prev_output_tokens = prev_output_tokens.index_select(0, sort_order)
     else:
         ntokens = sum(len(s['source']) for s in samples)
 
@@ -84,16 +84,6 @@ def collate(
     if samples[0].get('target_mapped', None) is not None:
         target_mapped = merge('target_mapped', left_pad=left_pad_target)
         target_mapped = target_mapped.index_select(0, sort_order)
-
-        if input_feeding:
-            # we create a shifted version of targets for feeding the
-            # previous output token(s) into the next decoder step
-            prev_output_tokens = merge(
-                'target_mapped',
-                left_pad=left_pad_target,
-                move_eos_to_beginning=True,
-            )
-            prev_output_tokens = prev_output_tokens.index_select(0, sort_order)
 
     batch = {
         'id': id,
@@ -192,7 +182,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
         max_source_positions=1024, max_target_positions=1024,
         shuffle=True, input_feeding=True,
         remove_eos_from_source=False, append_eos_to_target=False,
-        align_dataset=None, tgt_vocab_size=None,
+        align_dataset=None, tgt_vocab_size=None, perfect_oracle=False,
     ):
         super().__init__(src, src_sizes, src_dict,
             tgt=tgt, tgt_sizes=tgt_sizes, tgt_dict=tgt_dict,
@@ -202,11 +192,12 @@ class LanguagePairDatasetED(LanguagePairDataset):
             remove_eos_from_source=remove_eos_from_source, append_eos_to_target=append_eos_to_target,
             align_dataset=align_dataset)
         self.tgt_vocab_size = tgt_vocab_size
+        self.perfect_oracle = perfect_oracle
         self.tgt_vocab = None
         self.tgt_mapped = None
 
         if tgt_vocab_size is not None:
-            self.generate_tgt_vocab()
+            self.generate_tgt_vocab(perfect_oracle=self.perfect_oracle)
             self.generate_tgt_mapped()
 
     def __getitem__(self, index):
@@ -216,21 +207,26 @@ class LanguagePairDatasetED(LanguagePairDataset):
             example['target_mapped'] = self.tgt_mapped[index]
         return example
 
-    def generate_tgt_vocab(self):
+    def generate_tgt_vocab(self, perfect_oracle=False):
         top_tokens = torch.arange(self.tgt_vocab_size)
+        mandatory_tokens = torch.tensor([self.tgt_dict.bos(), self.tgt_dict.pad(), self.tgt_dict.eos(), self.tgt_dict.unk()])
 
         self.tgt_vocab = torch.ones((len(self.tgt), self.tgt_vocab_size)).long()
         for i in range(len(self.tgt)):
             tgt_tokens = self.tgt[i]
+            tgt_tokens = torch.cat((tgt_tokens, mandatory_tokens))
             tgt_tokens = torch.unique(tgt_tokens)
             assert (tgt_tokens.shape[0] <= self.tgt_vocab_size)
 
-            ix = top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
-            extra_tokens = top_tokens[ix]
-            vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
-            vocab_tokens, _ = torch.sort(vocab_tokens)
+            if perfect_oracle:
+                self.tgt_vocab[i, :tgt_tokens.shape[0]] = tgt_tokens
+            else:
+                ix = top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
+                extra_tokens = top_tokens[ix]
+                vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
+                vocab_tokens, _ = torch.sort(vocab_tokens)
 
-            self.tgt_vocab[i] = vocab_tokens
+                self.tgt_vocab[i] = vocab_tokens
 
     def generate_tgt_mapped(self):
         self.tgt_mapped = []
