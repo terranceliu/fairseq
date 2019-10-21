@@ -103,6 +103,12 @@ class TransformerEDModel(TransformerModel):
             no_encoder_attn=getattr(args, 'no_cross_attention', False),
         )
 
+    def get_targets(self, sample, net_output):
+        if self.decoder.efficient_decoding and self.decoder.use_dot:
+            return sample['target_mapped']
+        else:
+            return super().get_targets(sample, net_output)
+
 class TransformerEDDecoder(TransformerDecoder):
     """
     Transformer decoder consisting of *args.decoder_layers* layers. Each layer
@@ -122,16 +128,23 @@ class TransformerEDDecoder(TransformerDecoder):
         embed_dim = args.decoder_embed_dim
 
         self.efficient_decoding = True
-        self.oracle = True
+        self.oracle = False
         self.tgt_vocab_size = 200
-        self.use_dot = False
+        self.use_dot = True
 
-        self.num_embeddings = len(dictionary)
-        self.embed_dim = embed_dim
-        self.top_tokens = torch.arange(self.tgt_vocab_size).cuda()
+    def output_layer(self, features, **kwargs):
+        if self.efficient_decoding and self.use_dot:
+            return features
 
-        # if self.efficient_decoding and self.use_dot:
-        #     self.fc_out = Linear(out_embed_dim, embed_dim, dropout=self.dropout)
+        """Project features to the vocabulary size."""
+        if self.adaptive_softmax is None:
+            # project back to size of vocabulary
+            if self.share_input_output_embed:
+                return F.linear(features, self.embed_tokens.weight)
+            else:
+                return F.linear(features, self.embed_out)
+        else:
+            return features
 
     def forward(
         self,
@@ -139,7 +152,7 @@ class TransformerEDDecoder(TransformerDecoder):
         encoder_out=None,
         incremental_state=None,
         features_only=False,
-        target=None,
+        target_vocab=None,
         **extra_args,
     ):
         """
@@ -165,50 +178,18 @@ class TransformerEDDecoder(TransformerDecoder):
             x = self.output_layer(x)
 
             if self.efficient_decoding:
-                tgt_vocab = []
-                for i in range(target.shape[0]):
-                    tgt_tokens = torch.unique(target[i])
-                    if self.oracle:
-                        vocab_tokens = torch.ones(self.tgt_vocab_size, dtype=torch.long).cuda()
-                        vocab_tokens[:tgt_tokens.shape[0]] = tgt_tokens
-                    elif tgt_tokens.shape[0] >= self.tgt_vocab_size:
-                        vocab_tokens = tgt_tokens[:self.tgt_vocab_size]
-                    else:
-                        # get tokens from top_tokens not in tgt_tokens
-                        ix = self.top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
-                        extra_tokens = self.top_tokens[ix]
-                        vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
-
-                    tgt_vocab.append(vocab_tokens)
-                    if len(vocab_tokens) != self.tgt_vocab_size:
-                        pdb.set_trace()
-
-                tgt_vocab = torch.stack(tgt_vocab)
-
                 if self.use_dot:
-                    tgt_vocab_embeddings = self.embed_tokens(tgt_vocab)
-                    tgt_vocab_embeddings = tgt_vocab_embeddings.view(len(tgt_vocab_embeddings), self.embed_dim,
-                                                                     self.tgt_vocab_size)
-
+                    tgt_vocab_embeddings = self.embed_tokens(target_vocab)
+                    tgt_vocab_embeddings = tgt_vocab_embeddings.permute(0, 2, 1)
                     x = torch.bmm(x, tgt_vocab_embeddings)
-                    x_final = torch.zeros((x.shape[0], x.shape[1], self.num_embeddings)).cuda()
-                    x_final[:] = -float('inf')
-
-                    helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
-                    helper_ix = torch.from_numpy(helper_ix).cuda()
-
-                    x_final[helper_ix, :, tgt_vocab] = x.view(x.shape[0], x.shape[2], x.shape[1])
                 else:
                     x_final = torch.zeros(x.shape).cuda()
-                    x_final[:] = x.min() # -float('inf') doesn't work if you use smoothed xe
+                    x_final[:] = x.min()
 
-                    helper_ix = torch.arange(tgt_vocab.shape[0]).unsqueeze(0).T.expand(tgt_vocab.shape)
-                    # helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()
-                    # helper_ix = torch.from_numpy(helper_ix).cuda()
+                    helper_ix = torch.arange(target_vocab.shape[0]).unsqueeze(0).T.expand(target_vocab.shape)
 
-                    x_final[helper_ix, :, tgt_vocab] = x[helper_ix, :, tgt_vocab]
-
-                x = x_final
+                    x_final[helper_ix, :, target_vocab] = x[helper_ix, :, target_vocab]
+                    x = x_final
 
         return x, extra
 

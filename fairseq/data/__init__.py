@@ -17,6 +17,7 @@ from .concat_sentences_dataset import ConcatSentencesDataset
 from .id_dataset import IdDataset
 from .indexed_dataset import IndexedCachedDataset, IndexedDataset, IndexedRawTextDataset, MMapIndexedDataset
 from .language_pair_dataset import LanguagePairDataset
+from .language_pair_dataset_ed import LanguagePairDatasetED
 from .list_dataset import ListDataset
 from .lm_context_window_dataset import LMContextWindowDataset
 from .lru_cache_dataset import LRUCacheDataset
@@ -67,6 +68,7 @@ __all__ = [
     'IndexedDataset',
     'IndexedRawTextDataset',
     'LanguagePairDataset',
+    'LanguagePairDatasetED',
     'LeftPadDataset',
     'ListDataset',
     'LMContextWindowDataset',

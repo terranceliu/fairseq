@@ -258,6 +258,8 @@ class LSTMEncoder(FairseqEncoder):
         }
 
     def reorder_encoder_out(self, encoder_out, new_order):
+        # import pdb
+        # pdb.set_trace()
         encoder_out['encoder_out'] = tuple(
             eo.index_select(1, new_order)
             for eo in encoder_out['encoder_out']

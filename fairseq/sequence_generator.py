@@ -11,6 +11,7 @@ from fairseq import search, utils
 from fairseq.data import data_utils
 from fairseq.models import FairseqIncrementalDecoder
 
+import pdb
 
 class SequenceGenerator(object):
     def __init__(
@@ -128,7 +129,7 @@ class SequenceGenerator(object):
         # separately, but SequenceGenerator directly calls model.encoder
         encoder_input = {
             k: v for k, v in sample['net_input'].items()
-            if k not in ['prev_output_tokens', 'target']
+            if k not in ['prev_output_tokens']
         }
 
         src_tokens = encoder_input['src_tokens']
@@ -154,8 +155,10 @@ class SequenceGenerator(object):
         new_order = new_order.to(src_tokens.device).long()
         encoder_outs = model.reorder_encoder_out(encoder_outs, new_order)
 
-        target = sample['target']
-        target = target[new_order]
+        target_vocab = None
+        if 'target_vocab' in encoder_input.keys():
+            target_vocab = encoder_input['target_vocab']
+            target_vocab = target_vocab.index_select(0, new_order)
 
         # initialize buffers
         scores = src_tokens.new(bsz * beam_size, max_len + 1).float().fill_(0)
@@ -293,11 +296,21 @@ class SequenceGenerator(object):
                     reorder_state.view(-1, beam_size).add_(corr.unsqueeze(-1) * beam_size)
                 model.reorder_incremental_state(reorder_state)
                 encoder_outs = model.reorder_encoder_out(encoder_outs, reorder_state)
-                target = target[reorder_state]
+                if target_vocab is not None:
+                    target_vocab = target_vocab.index_select(0, reorder_state)
 
             lprobs, avg_attn_scores = model.forward_decoder(
-                tokens[:, :step + 1], encoder_outs, temperature=self.temperature, target=target
+                tokens[:, :step + 1], encoder_outs, temperature=self.temperature, target_vocab=target_vocab
             )
+
+            if lprobs.shape[1] != self.vocab_size:
+                temp = torch.zeros((lprobs.shape[0], self.vocab_size)).cuda()
+                temp[:] = -math.inf
+                helper_ix = torch.arange(target_vocab.shape[0]).unsqueeze(0).T.expand(target_vocab.shape)
+                temp[helper_ix, target_vocab] = lprobs
+                lprobs = temp
+
+            # pdb.set_trace()
 
             lprobs[:, self.pad] = -math.inf  # never select pad
             lprobs[:, self.unk] -= self.unk_penalty  # apply unk penalty
@@ -381,6 +394,12 @@ class SequenceGenerator(object):
                 lprobs.view(bsz, -1, self.vocab_size),
                 scores.view(bsz, beam_size, -1)[:, :, :step],
             )
+
+            # cand_scores, cand_indices, cand_beams = self.search.step(
+            #     step,
+            #     lprobs.view(bsz, -1, lprobs.shape[1]),
+            #     scores.view(bsz, beam_size, -1)[:, :, :step],
+            # )
 
             # cand_bbsz_idx contains beam indices for the top candidate
             # hypotheses, with a range of values: [0, bsz*beam_size),
@@ -544,7 +563,7 @@ class EnsembleModel(torch.nn.Module):
         return [model.encoder(**encoder_input) for model in self.models]
 
     @torch.no_grad()
-    def forward_decoder(self, tokens, encoder_outs, temperature=1., target=None):
+    def forward_decoder(self, tokens, encoder_outs, temperature=1., target_vocab=None):
         if len(self.models) == 1:
             return self._decode_one(
                 tokens,
@@ -553,7 +572,7 @@ class EnsembleModel(torch.nn.Module):
                 self.incremental_states,
                 log_probs=True,
                 temperature=temperature,
-                target=target,
+                target_vocab=target_vocab,
             )
 
         log_probs = []
@@ -566,7 +585,7 @@ class EnsembleModel(torch.nn.Module):
                 self.incremental_states,
                 log_probs=True,
                 temperature=temperature,
-                target=target,
+                target_vocab=target_vocab,
             )
             log_probs.append(probs)
             if attn is not None:
@@ -581,14 +600,14 @@ class EnsembleModel(torch.nn.Module):
 
     def _decode_one(
         self, tokens, model, encoder_out, incremental_states, log_probs,
-        temperature=1., target=None,
+        temperature=1., target_vocab=None,
     ):
         if self.incremental_states is not None:
             decoder_out = list(model.forward_decoder(
-                tokens, encoder_out=encoder_out, incremental_state=self.incremental_states[model], target=target,
+                tokens, encoder_out=encoder_out, incremental_state=self.incremental_states[model], target_vocab=target_vocab,
             ))
         else:
-            decoder_out = list(model.forward_decoder(tokens, encoder_out=encoder_out, target=target))
+            decoder_out = list(model.forward_decoder(tokens, encoder_out=encoder_out, target_vocab=target_vocab))
         decoder_out[0] = decoder_out[0][:, -1:, :]
         if temperature != 1.:
             decoder_out[0].div_(temperature)
