@@ -173,13 +173,3 @@ class TranslationEDTask(TranslationTask):
             tgt_vocab_size=self.args.tgt_vocab_size,
             perfect_oracle=self.args.perfect_oracle,
         )
-
-    # def inference_step(self, generator, models, sample, prefix_tokens=None):
-    #     with torch.no_grad():
-    #         hypos = generator.generate(models, sample, prefix_tokens=prefix_tokens)
-    #
-    #     for i in range(len(sample)):
-    #         for j, hypo in enumerate(hypos[i][:]):
-    #             pdb.set_trace()
-    #
-    #     return hypos

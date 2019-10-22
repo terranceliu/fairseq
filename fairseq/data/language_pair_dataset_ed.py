@@ -129,21 +129,6 @@ def collate(
 
     return batch
 
-# def collate(samples, pad_idx, eos_idx, left_pad_source=True, left_pad_target=False,
-#                input_feeding=True,):
-#     batch = collate_orig(samples, pad_idx, eos_idx, left_pad_source, left_pad_target, input_feeding)
-#     # pdb.set_trace()
-#     #
-#     # print(samples)
-#     # print(samples[0].keys())
-#
-#     batch['target_vocab'] = samples[0].get('target_vocab')
-#     batch['target_mapped'] = samples[0].get('target_mapped')
-#
-#     # target_vocab = samples[0].get('target_vocab')
-#
-#     return batch
-
 class LanguagePairDatasetED(LanguagePairDataset):
     """
     A pair of torch.utils.data.Datasets.

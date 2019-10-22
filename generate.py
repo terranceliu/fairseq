@@ -134,8 +134,6 @@ def main(args):
 
                 # Process top predictions
                 for j, hypo in enumerate(hypos[i][:args.nbest]):
-                    import pdb
-                    # pdb.set_trace()
                     hypo_tokens, hypo_str, alignment = utils.post_process_prediction(
                         hypo_tokens=hypo['tokens'].int().cpu(),
                         src_str=src_str,
