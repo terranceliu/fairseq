@@ -4,10 +4,11 @@
 # LICENSE file in the root directory of this source tree.
 
 import numpy as np
+import os
 import torch
 
 from . import data_utils, FairseqDataset, LanguagePairDataset
-from .language_pair_dataset import collate as collate_orig
+from tqdm import tqdm
 
 import pdb
 
@@ -85,6 +86,16 @@ def collate(
         target_mapped = merge('target_mapped', left_pad=left_pad_target)
         target_mapped = target_mapped.index_select(0, sort_order)
 
+    target_vocab_bow = None
+    if samples[0].get('target_vocab_bow', None) is not None:
+        target_vocab_bow = merge('target_vocab_bow', left_pad=None)
+        target_vocab_bow = target_vocab_bow.index_select(0, sort_order)
+
+    target_vocab_nopad = None
+    if samples[0].get('target_vocab_nopad', None) is not None:
+        target_vocab_nopad = merge('target_vocab_nopad', left_pad=None)
+        target_vocab_nopad = target_vocab_nopad.index_select(0, sort_order)
+
     batch = {
         'id': id,
         'nsentences': len(samples),
@@ -101,6 +112,10 @@ def collate(
         batch['net_input']['target_vocab'] = target_vocab
     if target_mapped is not None:
         batch['target_mapped'] = target_mapped
+    if target_vocab_bow is not None:
+        batch['target_vocab_bow'] = target_vocab_bow
+    if target_vocab_nopad is not None:
+        batch['target_vocab_nopad'] = target_vocab_nopad
 
     if samples[0].get('alignment', None) is not None:
         bsz, tgt_sz = batch['target'].shape
@@ -128,6 +143,8 @@ def collate(
             batch['align_weights'] = align_weights
 
     return batch
+
+
 
 class LanguagePairDatasetED(LanguagePairDataset):
     """
@@ -161,13 +178,15 @@ class LanguagePairDatasetED(LanguagePairDataset):
     """
 
     def __init__(
-        self, src, src_sizes, src_dict,
+        self, split, data_path,
+        src, src_sizes, src_dict,
         tgt=None, tgt_sizes=None, tgt_dict=None,
         left_pad_source=True, left_pad_target=False,
         max_source_positions=1024, max_target_positions=1024,
         shuffle=True, input_feeding=True,
         remove_eos_from_source=False, append_eos_to_target=False,
         align_dataset=None, tgt_vocab_size=None, perfect_oracle=False,
+        tgt_bow=False,
     ):
         super().__init__(src, src_sizes, src_dict,
             tgt=tgt, tgt_sizes=tgt_sizes, tgt_dict=tgt_dict,
@@ -176,65 +195,163 @@ class LanguagePairDatasetED(LanguagePairDataset):
             shuffle=shuffle, input_feeding=input_feeding,
             remove_eos_from_source=remove_eos_from_source, append_eos_to_target=append_eos_to_target,
             align_dataset=align_dataset)
+
+        self.split = split
+        self.data_path = data_path
+        self.preprocessed_path = os.path.join(data_path, "ed_preprocessed")
+
         self.tgt_vocab_size = tgt_vocab_size
         self.perfect_oracle = perfect_oracle
+        self.tgt_bow = tgt_bow
+
         self.tgt_vocab = None
         self.tgt_mapped = None
+        self.tgt_vocab_bow = None
+        self.tgt_vocab_nopad = None
 
-        if tgt_vocab_size is not None:
-            self.generate_tgt_vocab(perfect_oracle=self.perfect_oracle)
+        self.mandatory_tokens = torch.tensor(
+            [self.tgt_dict.bos(), self.tgt_dict.pad(), self.tgt_dict.eos(), self.tgt_dict.unk()])
+
+        if self.tgt_vocab_size is not None:
+            self.top_tokens = torch.arange(self.tgt_vocab_size)
+            self.generate_tgt_vocab()
             self.generate_tgt_mapped()
+
+        if self.tgt_bow:
+            self.generate_tgt_vocab_nopad()
+            # self.generate_tgt_vocab_bow()
+
 
     def __getitem__(self, index):
         example = super().__getitem__(index)
         if self.tgt_vocab_size is not None:
             example['target_vocab'] = self.tgt_vocab[index]
             example['target_mapped'] = self.tgt_mapped[index]
+        if self.tgt_bow:
+            # example['target_vocab_bow'] = self.get_bow(index)
+            example['target_vocab_nopad'] = self.tgt_vocab_nopad[index]
         return example
 
-    def generate_tgt_vocab(self, perfect_oracle=False):
-        top_tokens = torch.arange(self.tgt_vocab_size)
-        mandatory_tokens = torch.tensor([self.tgt_dict.bos(), self.tgt_dict.pad(), self.tgt_dict.eos(), self.tgt_dict.unk()])
+    def generate_tgt_vocab(self):
+        filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_{}_oracle{}.pt".format(
+            self.split, self.tgt_vocab_size, self.perfect_oracle))
 
-        self.tgt_vocab = torch.ones((len(self.tgt), self.tgt_vocab_size)).long()
-        for i in range(len(self.tgt)):
-            tgt_tokens = self.tgt[i]
-            tgt_tokens = torch.cat((tgt_tokens, mandatory_tokens))
-            tgt_tokens = torch.unique(tgt_tokens)
-            assert (tgt_tokens.shape[0] <= self.tgt_vocab_size)
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            print("Found preprocessed file for self.tgt_vocab!")
+            self.tgt_vocab = torch.load(filepath)
+        else:
+            print("Generating tgt_vocab...")
+            self.tgt_vocab = torch.ones((len(self.tgt), self.tgt_vocab_size)).long()
+            for i in range(len(self.tgt)):
+                tgt_tokens = self.tgt[i]
+                tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
+                tgt_tokens = torch.unique(tgt_tokens)
+                assert (tgt_tokens.shape[0] <= self.tgt_vocab_size)
 
-            if perfect_oracle:
-                self.tgt_vocab[i, :tgt_tokens.shape[0]] = tgt_tokens
-            else:
-                ix = top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
-                extra_tokens = top_tokens[ix]
-                vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
-                vocab_tokens, _ = torch.sort(vocab_tokens)
+                if self.perfect_oracle:
+                    self.tgt_vocab[i, :tgt_tokens.shape[0]] = tgt_tokens
+                else:
+                    ix = self.top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
+                    extra_tokens = self.top_tokens[ix]
+                    vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
+                    vocab_tokens, _ = torch.sort(vocab_tokens)
 
-                self.tgt_vocab[i] = vocab_tokens
+                    self.tgt_vocab[i] = vocab_tokens
+
+            torch.save(self.tgt_vocab, filepath)
 
     def generate_tgt_mapped(self):
-        self.tgt_mapped = []
+        filepath = os.path.join(self.preprocessed_path, "{}.tgt_mapped_{}_oracle{}.pt".format(
+            self.split, self.tgt_vocab_size, self.perfect_oracle))
 
-        for i in range(len(self.tgt)):
-            target = self.tgt[i]
-            tgt_vocab = self.tgt_vocab[i]
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            print("Found preprocessed file for self.tgt_mapped!")
+            self.tgt_mapped = torch.load(filepath)
+        else:
+            print("Generating tgt_mapped...")
+            self.tgt_mapped = []
+            for i in range(len(self.tgt)):
+                target = self.tgt[i]
+                tgt_vocab = self.tgt_vocab[i]
 
-            # Just added for now. Probably don't need
-            if self.append_eos_to_target:
-                eos = self.tgt_dict.eos() if self.tgt_dict else self.src_dict.eos()
-                if self.tgt and target[-1] != eos:
-                    target = torch.cat([target, torch.LongTensor([eos])])
+                # Just added for now. Probably don't need
+                if self.append_eos_to_target:
+                    eos = self.tgt_dict.eos() if self.tgt_dict else self.src_dict.eos()
+                    if self.tgt and target[-1] != eos:
+                        target = torch.cat([target, torch.LongTensor([eos])])
 
-            index = np.argsort(tgt_vocab)
-            sorted_x = tgt_vocab[index]
-            sorted_index = np.searchsorted(sorted_x, target)
+                index = np.argsort(tgt_vocab)
+                sorted_x = tgt_vocab[index]
+                sorted_index = np.searchsorted(sorted_x, target)
 
-            yindex = np.take(index, sorted_index, mode="clip")
-            mask = tgt_vocab[yindex] != target
+                yindex = np.take(index, sorted_index, mode="clip")
+                mask = tgt_vocab[yindex] != target
 
-            result = np.ma.array(yindex, mask=mask).data
-            self.tgt_mapped.append(torch.tensor(result))
+                result = np.ma.array(yindex, mask=mask).data
+                self.tgt_mapped.append(torch.tensor(result))
+
+            torch.save(self.tgt_mapped, filepath)
+
+    def generate_tgt_vocab_nopad(self):
+        filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_nopad.pt".format(self.split))
+
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            print("Found preprocessed file for tgt_vocab_nopad!")
+            self.tgt_vocab_nopad = torch.load(filepath)
+        else:
+            print("Generating tgt_vocab_nopad..")
+            num_samples = len(self.tgt)
+
+            self.tgt_vocab_nopad = []
+            for idx in tqdm(range(num_samples)):
+                tgt_tokens = self.tgt[idx]
+                tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
+                tgt_tokens = torch.unique(tgt_tokens)
+                self.tgt_vocab_nopad.append(tgt_tokens)
+
+            torch.save(self.tgt_vocab_nopad, filepath)
+
+    def generate_tgt_vocab_bow(self):
+        filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_bow.pt".format(self.split))
+
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            print("Found preprocessed file for tgt_vocab_bow!")
+            indices, values, bow_size = torch.load(filepath)
+        else:
+            print("Generating tgt_vocab_bow...")
+            num_samples = len(self.tgt)
+            tgt_full_vocab_size = len(self.tgt_dict)
+            bow_size = torch.Size((num_samples, tgt_full_vocab_size))
+
+            indices_0 = torch.LongTensor([])
+            indices_1 = torch.LongTensor([])
+            values = torch.LongTensor([])
+
+            for idx in tqdm(range(len(self.tgt))):
+                tgt_tokens = self.tgt[idx]
+                tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
+
+                i1 = torch.unique(tgt_tokens)
+                i0 = idx * torch.ones(len(i1)).long()
+                v = torch.ones(len(i1)).long()
+
+                indices_0 = torch.cat([indices_0, i0])
+                indices_1 = torch.cat([indices_1, i1])
+                values = torch.cat([values, v])
+
+            indices = torch.stack([indices_0, indices_1])
+            torch.save((indices, values, bow_size), filepath)
+
+        # self.tgt_vocab_bow = torch.sparse.LongTensor(indices, values, bow_size)
+        self.tgt_vocab_bow = indices, values, bow_size
+
+    def get_bow(self, index):
+        bow = torch.zeros(len(self.tgt_dict)).long()
+        # i = self.tgt_vocab_bow._indices()
+        # nonzero_indices = (i[1][i[0] == index])
+        nonzero_indices = self.tgt_vocab_nopad[index]
+        bow[nonzero_indices] = 1
+        return bow
 
     def collater(self, samples):
         return collate(

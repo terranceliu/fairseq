@@ -30,6 +30,8 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         logits = model.get_logits(net_output).float()
         target = model.get_targets(sample, net_output, expand_steps=False).float()
 
+        # print(self.get_recall(logits, target))
+
         if hasattr(model, 'get_target_weights'):
             weights = model.get_target_weights(target, net_output)
             if torch.is_tensor(weights):
@@ -51,7 +53,28 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
             'nsentences': logits.size(0),
             'sample_size': sample_size,
         }
+
         return loss, sample_size, logging_output
+
+    def get_recall(self, lprobs, target):
+        top = lprobs.sort(descending=True)[1][:, :500]
+        tgt_vocab = target.nonzero()
+
+        running_total = 0
+        running_correct = 0
+        for tgt in tgt_vocab:
+            idx = tgt[0]
+            token = tgt[1]
+
+            if token <= 3:
+                continue
+
+            running_total += 1
+            if token in top[idx]:
+                running_correct += 1
+
+        return float(running_correct) / running_total
+
 
     @staticmethod
     def aggregate_logging_outputs(logging_outputs):

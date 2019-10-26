@@ -28,7 +28,7 @@ def load_langpair_dataset(
     combine, dataset_impl, upsample_primary,
     left_pad_source, left_pad_target, max_source_positions,
     max_target_positions, prepend_bos=False, load_alignments=False,
-    tgt_vocab_size=None, perfect_oracle=False,
+    tgt_vocab_size=None, perfect_oracle=False, tgt_bow=False
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
@@ -85,6 +85,7 @@ def load_langpair_dataset(
             align_dataset = data_utils.load_indexed_dataset(align_path, None, dataset_impl)
 
     return LanguagePairDatasetED(
+        split, data_path,
         src_dataset, src_dataset.sizes, src_dict,
         tgt_dataset, tgt_dataset.sizes, tgt_dict,
         left_pad_source=left_pad_source,
@@ -94,6 +95,7 @@ def load_langpair_dataset(
         align_dataset=align_dataset,
         tgt_vocab_size=tgt_vocab_size,
         perfect_oracle=perfect_oracle,
+        tgt_bow=tgt_bow,
     )
 
 @register_task('translation_ed')
@@ -148,6 +150,8 @@ class TranslationEDTask(TranslationTask):
                             help='target vocab size of efficient decoding')
         parser.add_argument('--perfect_oracle', action='store_true',
                             help='perfect oracle')
+        parser.add_argument('--tgt-bow', action='store_true',
+                            help='convert target vocab to bag of words')
         # fmt: on
 
     def __init__(self, args, src_dict, tgt_dict):
@@ -172,4 +176,5 @@ class TranslationEDTask(TranslationTask):
             load_alignments=self.args.load_alignments,
             tgt_vocab_size=self.args.tgt_vocab_size,
             perfect_oracle=self.args.perfect_oracle,
+            tgt_bow=self.args.tgt_bow,
         )
