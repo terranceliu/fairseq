@@ -11,6 +11,7 @@ from fairseq import utils
 
 from . import FairseqCriterion, register_criterion
 
+import pdb
 
 @register_criterion('binary_cross_entropy')
 class BinaryCrossEntropyCriterion(FairseqCriterion):
@@ -30,7 +31,8 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         logits = model.get_logits(net_output).float()
         target = model.get_targets(sample, net_output, expand_steps=False).float()
 
-        # print(self.get_recall(logits, target))
+        pdb.set_trace()
+        print(self.get_recall(logits, target))
 
         if hasattr(model, 'get_target_weights'):
             weights = model.get_target_weights(target, net_output)

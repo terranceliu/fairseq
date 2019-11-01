@@ -219,7 +219,9 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
         if self.tgt_bow:
             self.generate_tgt_vocab_nopad()
-            # self.generate_tgt_vocab_bow()
+            self.generate_tgt_vocab_bow()
+
+        # pdb.set_trace()
 
 
     def __getitem__(self, index):
@@ -228,8 +230,8 @@ class LanguagePairDatasetED(LanguagePairDataset):
             example['target_vocab'] = self.tgt_vocab[index]
             example['target_mapped'] = self.tgt_mapped[index]
         if self.tgt_bow:
-            # example['target_vocab_bow'] = self.get_bow(index)
-            example['target_vocab_nopad'] = self.tgt_vocab_nopad[index]
+            example['target_vocab_bow'] = self.get_bow(index)
+            # example['target_vocab_nopad'] = self.tgt_vocab_nopad[index]
         return example
 
     def generate_tgt_vocab(self):
@@ -316,38 +318,58 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
         if os.path.exists(filepath) and os.path.isfile(filepath):
             print("Found preprocessed file for tgt_vocab_bow!")
-            indices, values, bow_size = torch.load(filepath)
+            indices, bow_size = torch.load(filepath)
         else:
             print("Generating tgt_vocab_bow...")
             num_samples = len(self.tgt)
             tgt_full_vocab_size = len(self.tgt_dict)
             bow_size = torch.Size((num_samples, tgt_full_vocab_size))
 
-            indices_0 = torch.LongTensor([])
-            indices_1 = torch.LongTensor([])
-            values = torch.LongTensor([])
+            indices_0 = []
+            indices_1 = []
+
+            indices_0_temp = torch.tensor([]).long()
+            indices_1_temp = torch.tensor([]).long()
+            count_temp = 0
 
             for idx in tqdm(range(len(self.tgt))):
                 tgt_tokens = self.tgt[idx]
                 tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
 
-                i1 = torch.unique(tgt_tokens)
+                i1 = torch.unique(tgt_tokens).long()
                 i0 = idx * torch.ones(len(i1)).long()
-                v = torch.ones(len(i1)).long()
 
-                indices_0 = torch.cat([indices_0, i0])
-                indices_1 = torch.cat([indices_1, i1])
-                values = torch.cat([values, v])
+                indices_0.append(i0)
+                indices_1.append(i1)
+                count_temp += len(i0)
 
-            indices = torch.stack([indices_0, indices_1])
-            torch.save((indices, values, bow_size), filepath)
+                # to address memory issues
+                if count_temp > 1e6:
+                    temp_0 = torch.cat(indices_0)
+                    temp_1 = torch.cat(indices_1)
 
+                    indices_0 = []
+                    indices_1 = []
+                    count_temp = 0
+
+                    indices_0_temp = torch.cat((indices_0_temp, temp_0))
+                    indices_1_temp = torch.cat((indices_1_temp, temp_1))
+
+            indices_0 = torch.cat((indices_0_temp, torch.cat(indices_0)))
+            indices_1 = torch.cat((indices_1_temp, torch.cat(indices_1)))
+            indices = torch.stack([indices_0, indices_1]).long()
+
+
+
+            torch.save((indices, bow_size), filepath)
+
+        # values = torch.ones(indices.shape[1]).long()
         # self.tgt_vocab_bow = torch.sparse.LongTensor(indices, values, bow_size)
-        self.tgt_vocab_bow = indices, values, bow_size
+        self.tgt_vocab_bow = indices, bow_size
 
     def get_bow(self, index):
         bow = torch.zeros(len(self.tgt_dict)).long()
-        # i = self.tgt_vocab_bow._indices()
+        # i = self.tgt_vocab_bow[0]
         # nonzero_indices = (i[1][i[0] == index])
         nonzero_indices = self.tgt_vocab_nopad[index]
         bow[nonzero_indices] = 1

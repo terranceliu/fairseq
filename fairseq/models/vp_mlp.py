@@ -160,12 +160,12 @@ class VP_MLP(FairseqEncoderDecoderModel):
         return cls(encoder, decoder)
 
     def get_targets(self, sample, net_output, **kwargs):
-        return sample['target_vocab_nopad']
-    #     return sample['target_vocab_bow']
-    #
-    # def get_target_weights(self, targets, net_output):
-    #     weights = targets * 10 + 1 - targets
-    #     return weights
+        # return sample['target_vocab_nopad']
+        return sample['target_vocab_bow']
+
+    def get_target_weights(self, targets, net_output):
+        weights = targets * 10 + 1 - targets
+        return weights
 
     def get_logits(self, net_output):
         return net_output
