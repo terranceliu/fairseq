@@ -16,7 +16,7 @@ from fairseq.data import (
     PrependTokenDataset,
 )
 
-from . import register_task
+from . import register_task, TASK_REGISTRY
 from .translation import TranslationTask, load_langpair_dataset
 
 import pdb
@@ -28,7 +28,8 @@ def load_langpair_dataset(
     combine, dataset_impl, upsample_primary,
     left_pad_source, left_pad_target, max_source_positions,
     max_target_positions, prepend_bos=False, load_alignments=False,
-    tgt_vocab_size=None, perfect_oracle=False, tgt_bow=False
+    tgt_vocab_size=None, perfect_oracle=False, tgt_bow=False,
+    vocab_task = None,
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
@@ -96,6 +97,7 @@ def load_langpair_dataset(
         tgt_vocab_size=tgt_vocab_size,
         perfect_oracle=perfect_oracle,
         tgt_bow=tgt_bow,
+        vocab_task=vocab_task,
     )
 
 @register_task('translation_ed')
@@ -165,6 +167,8 @@ class TranslationEDTask(TranslationTask):
         # infer langcode
         src, tgt = self.args.source_lang, self.args.target_lang
 
+        self.vocab_task = TASK_REGISTRY['vocab_pred'].setup_task(self.args)
+
         self.datasets[split] = load_langpair_dataset(
             data_path, split, src, self.src_dict, tgt, self.tgt_dict,
             combine=combine, dataset_impl=self.args.dataset_impl,
@@ -177,4 +181,5 @@ class TranslationEDTask(TranslationTask):
             tgt_vocab_size=self.args.tgt_vocab_size,
             perfect_oracle=self.args.perfect_oracle,
             tgt_bow=self.args.tgt_bow,
+            vocab_task=self.vocab_task,
         )

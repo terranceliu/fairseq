@@ -160,12 +160,12 @@ class VP_MLP(FairseqEncoderDecoderModel):
         return cls(encoder, decoder)
 
     def get_targets(self, sample, net_output, **kwargs):
-        # return sample['target_vocab_nopad']
-        return sample['target_vocab_bow']
-
-    def get_target_weights(self, targets, net_output):
-        weights = targets * 10 + 1 - targets
-        return weights
+        return sample['target_vocab_nopad']
+    #     return sample['target_vocab_bow']
+    #
+    # def get_target_weights(self, targets, net_output):
+    #     weights = targets * 10 + 1 - targets
+    #     return weights
 
     def get_logits(self, net_output):
         return net_output
@@ -177,7 +177,7 @@ class MLPEncoder(FairseqEncoder):
 
     def __init__(
             self, dictionary, embed_dim=512, hidden_size=512,
-            dropout_in=0.1, dropout_out=0.1, pretrained_embed=None,
+            dropout_in=0.2, dropout_out=0.2, pretrained_embed=None,
     ):
         super().__init__(dictionary)
         self.dropout_in = dropout_in
@@ -199,6 +199,9 @@ class MLPEncoder(FairseqEncoder):
 
     def forward(self, src_tokens, src_lengths, **kwargs):
         x = self.embed_tokens(src_tokens)
+        mask = src_tokens <= 3
+        x[mask] = 0
+
         # x = F.dropout(x, p=self.dropout_in, training=self.training)
         x = x.mean(dim=1)
 
@@ -240,11 +243,7 @@ class MLPDecoder(FairseqIncrementalDecoder):
 
     def forward(self, prev_output_tokens, encoder_out, incremental_state=None, **kwargs):
         x = self.fc_out(encoder_out)
-
         return x
-
-
-        return encoder_out
 
     def get_normalized_probs(self, net_output, log_probs, sample):
         logits = net_output

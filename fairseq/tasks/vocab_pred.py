@@ -17,7 +17,7 @@ from fairseq.data import (
 )
 
 from . import register_task
-from .translation_ed import TranslationEDTask, load_langpair_dataset
+from .translation_ed import TranslationEDTask
 
 import pdb
 
@@ -46,9 +46,9 @@ class VocabPredTask(TranslationEDTask):
     def __init__(self, args, src_dict, tgt_dict):
         super().__init__(args, src_dict, tgt_dict)
 
-    def valid_step(self, sample, model, criterion):
+    def valid_step(self, sample, model, criterion, print_recall=False, get_logits=False):
         model.eval()
         with torch.no_grad():
-            loss, sample_size, logging_output = criterion(model, sample)
+            loss, sample_size, logging_output = criterion(model, sample, print_recall=print_recall)
         return loss, sample_size, logging_output
 

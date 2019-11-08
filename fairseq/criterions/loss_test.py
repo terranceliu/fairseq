@@ -50,7 +50,7 @@ class LossTest(FairseqCriterion):
                             help='epsilon for label smoothing, 0 means no label smoothing')
         # fmt: on
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, reduce=True, print_recall=False):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -59,7 +59,7 @@ class LossTest(FairseqCriterion):
         3) logging outputs to display while training
         """
         net_output = model(**sample['net_input'])
-        loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
+        loss, nll_loss, recall = self.compute_loss(model, net_output, sample, reduce=reduce, print_recall=print_recall)
         sample_size = sample['target'].size(0) if self.args.sentence_avg else sample['ntokens']
         logging_output = {
             'loss': utils.item(loss.data) if reduce else loss.data,
@@ -68,9 +68,14 @@ class LossTest(FairseqCriterion):
             'nsentences': sample['target'].size(0),
             'sample_size': sample_size,
         }
+
+        if recall is not None:
+            logging_output['recall'] = utils.item(recall.data) if reduce else recall.data
+            print(recall.data / sample['target'].size(0))
+
         return loss, sample_size, logging_output
 
-    def compute_loss(self, model, net_output, sample, reduce=True):
+    def compute_loss(self, model, net_output, sample, reduce=True, print_recall=False):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         # lprobs = lprobs.view(-1, lprobs.size(-1))
         # target = model.get_targets(sample, net_output).view(-1, 1)
@@ -78,23 +83,30 @@ class LossTest(FairseqCriterion):
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs, target, self.eps, ignore_index=self.padding_idx, reduce=reduce,
         )
-        print(self.get_recall(lprobs, target))
-        return loss, nll_loss
+        recall = None
+        if print_recall:
+            recall = self.get_recall(lprobs, target, top_k=500)
+        return loss, nll_loss, recall
 
-    def get_recall(self, lprobs, target):
-        top = lprobs.sort(descending=True)[1][:, :1000]
+    def get_recall(self, lprobs, target, top_k=1000):
+        top = lprobs.sort(descending=True)[1][:, :top_k]
+        tgt_vocab = target
 
-        running_total = 0
-        running_correct = 0
-        for i in range(len(target)):
-            for token in target[i]:
+        totals = torch.zeros(len(lprobs)).cuda()
+        corrects = torch.zeros(len(lprobs)).cuda()
+        for idx, tgt in enumerate(tgt_vocab):
+            for token in tgt:
                 if token <= 3:
                     continue
-                running_total += 1
-                if token in top[i]:
-                    running_correct += 1
 
-        return float(running_correct) / running_total
+                totals[idx] += 1
+                if token in top[idx]:
+                    corrects[idx] += 1
+
+        recalls = corrects / totals
+
+        return recalls.sum()
+
 
     @staticmethod
     def aggregate_logging_outputs(logging_outputs):
@@ -102,7 +114,9 @@ class LossTest(FairseqCriterion):
         ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
         nsentences = sum(log.get('nsentences', 0) for log in logging_outputs)
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
+
         return {
+            'recall': sum(log.get('recall', 0) for log in logging_outputs) / nsentences if sample_size > 0 else 0.,
             'loss': sum(log.get('loss', 0) for log in logging_outputs) / sample_size / math.log(2) if sample_size > 0 else 0.,
             'nll_loss': sum(log.get('nll_loss', 0) for log in logging_outputs) / ntokens / math.log(2) if ntokens > 0 else 0.,
             'ntokens': ntokens,

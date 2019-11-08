@@ -46,6 +46,8 @@ def main(args, override_args=None):
 
     # Load valid dataset (we load training data below, based on the latest checkpoint)
     for subset in args.valid_subset.split(','):
+        import pdb
+        pdb.set_trace()
         try:
             task.load_dataset(subset, combine=False, epoch=0)
             dataset = task.dataset(subset)

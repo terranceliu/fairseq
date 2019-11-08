@@ -19,7 +19,7 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
     def __init__(self, args, task):
         super().__init__(args, task)
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, reduce=True, print_recall=False):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -31,8 +31,6 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         logits = model.get_logits(net_output).float()
         target = model.get_targets(sample, net_output, expand_steps=False).float()
 
-        pdb.set_trace()
-        print(self.get_recall(logits, target))
 
         if hasattr(model, 'get_target_weights'):
             weights = model.get_target_weights(target, net_output)
@@ -56,14 +54,20 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
             'sample_size': sample_size,
         }
 
+        if print_recall:
+            recall = self.get_recall(logits, target, top_k=500)
+            logging_output['recall'] = utils.item(recall.data) if reduce else recall.data
+            print(recall.data.float() / logits.size(0))
+
         return loss, sample_size, logging_output
 
-    def get_recall(self, lprobs, target):
-        top = lprobs.sort(descending=True)[1][:, :500]
+
+    def get_recall(self, lprobs, target, top_k=1000):
+        top = lprobs.sort(descending=True)[1][:, :top_k]
         tgt_vocab = target.nonzero()
 
-        running_total = 0
-        running_correct = 0
+        totals = torch.zeros(len(lprobs)).cuda()
+        corrects = torch.zeros(len(lprobs)).cuda()
         for tgt in tgt_vocab:
             idx = tgt[0]
             token = tgt[1]
@@ -71,21 +75,36 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
             if token <= 3:
                 continue
 
-            running_total += 1
-            if token in top[idx]:
-                running_correct += 1
+            totals[idx] += 1
 
-        return float(running_correct) / running_total
+
+            # top_tokens = torch.arange(1000).cuda()
+            # ix = top_tokens.view(1, -1).eq(top[idx].view(-1, 1)).sum(0) == 0
+            # extra_tokens = top_tokens[ix]
+            # vocab_tokens = torch.cat((top[idx], extra_tokens))[:1000]
+
+            # if token < top_k:
+            if token in top[idx]:
+            # if token in top[idx] or token < 500:
+            # if token in vocab_tokens:
+                corrects[idx] += 1
+
+        recalls = corrects / totals
+        # recalls = corrects == totals
+
+        return recalls.sum()
 
 
     @staticmethod
     def aggregate_logging_outputs(logging_outputs):
         """Aggregate logging outputs from data parallel training."""
+        recall_sum = sum(log.get('recall', 0) for log in logging_outputs)
         loss_sum = sum(log.get('loss', 0) for log in logging_outputs)
         ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
         nsentences = sum(log.get('nsentences', 0) for log in logging_outputs)
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
         agg_output = {
+            'recall': recall_sum / nsentences,
             'loss': loss_sum / sample_size / math.log(2),
             'ntokens': ntokens,
             'nsentences': nsentences,
