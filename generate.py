@@ -89,6 +89,11 @@ def main(args):
         scorer = bleu.Scorer(tgt_dict.pad(), tgt_dict.eos(), tgt_dict.unk())
     num_sentences = 0
     has_target = True
+
+    count_total = 0.0
+    count_problems = 0.0
+    lengths = []
+
     with progress_bar.build_progress_bar(args, itr) as t:
         wps_meter = TimeMeter()
         for sample in t:
@@ -105,7 +110,30 @@ def main(args):
             num_generated_tokens = sum(len(h[0]['tokens']) for h in hypos)
             gen_timer.stop(num_generated_tokens)
 
+            non_perfect_recall = []
+            for i in range(len(sample['target_old'])):
+                a = sample['net_input']['target_vocab'][i]
+                b = sample['target_old'][i]
+
+                for token in b:
+                    if token not in a:
+                        non_perfect_recall.append(i)
+                        break
+
+            count_total += len(sample['target_old'])
+            count_problems += len(non_perfect_recall)
+
+            # import pdb
+            # pdb.set_trace()
+
             for i, sample_id in enumerate(sample['id'].tolist()):
+                # if i not in non_perfect_recall:
+                #     continue
+
+                if (sample['target_old'][i] >= 3).sum().item() not in [29, 30, 31]:
+                    continue
+                lengths.append((sample['target_old'][i] >= 3).sum().item())
+
                 has_target = sample['target'] is not None
 
                 # Remove padding
@@ -175,6 +203,10 @@ def main(args):
             wps_meter.update(num_generated_tokens)
             t.log({'wps': round(wps_meter.avg)})
             num_sentences += sample['nsentences']
+
+    import numpy as np
+    print(count_problems / count_total)
+    print(np.array(lengths).mean())
 
     print('| Translated {} sentences ({} tokens) in {:.1f}s ({:.2f} sentences/s, {:.2f} tokens/s)'.format(
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))

@@ -81,6 +81,11 @@ def collate(
         target_vocab = merge('target_vocab', left_pad=None)
         target_vocab = target_vocab.index_select(0, sort_order)
 
+    target_old = None
+    if samples[0].get('target_old', None) is not None:
+        target_old = merge('target_old', left_pad=left_pad_target)
+        target_old = target_old.index_select(0, sort_order)
+
     target_mapped = None
     if samples[0].get('target_mapped', None) is not None:
         target_mapped = merge('target_mapped', left_pad=left_pad_target)
@@ -111,6 +116,8 @@ def collate(
         batch['net_input']['prev_output_tokens'] = prev_output_tokens
     if target_vocab is not None:
         batch['net_input']['target_vocab'] = target_vocab
+    if target_old is not None:
+        batch['target_old'] = target_old
     if target_mapped is not None:
         batch['target_mapped'] = target_mapped
     if target_vocab_bow is not None:
@@ -206,6 +213,8 @@ class LanguagePairDatasetED(LanguagePairDataset):
         self.perfect_oracle = perfect_oracle
         self.tgt_bow = tgt_bow
 
+        self.tgt_old = self.tgt
+
         self.tgt_vocab = None
         self.tgt_mapped = None
         self.tgt_vocab_bow = None
@@ -226,37 +235,50 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.generate_tgt_mapped()
 
 
-        self.generate_tgt_vocab_nopad()
-        if self.tgt_bow:
-            self.generate_tgt_vocab_bow()
+        # self.generate_tgt_vocab_nopad()
+        # if self.tgt_bow:
+        #     self.generate_tgt_vocab_bow()
 
 
-        self.num_extra_bpe = 1
-        self.extra_tokens = []
-        self.token2idx = {}
-        for i in range(len(self.tgt_dict)):
-            token = self.tgt_dict[i]
-            token_trunc = token.replace('@', '')
-            if len(token_trunc) <= self.num_extra_bpe:
-                self.extra_tokens.append(i)
-                self.token2idx[token] = i
-        self.extra_tokens = torch.tensor(self.extra_tokens)
+        # self.num_extra_bpe = 1
+        # self.extra_tokens = []
+        # self.token2idx = {}
+        # if self.num_extra_bpe > 0:
+        #     for i in range(len(self.tgt_dict)):
+        #         token = self.tgt_dict[i]
+        #         token_trunc = token.replace('@', '')
+        #         if len(token_trunc) <= self.num_extra_bpe:
+        #             self.extra_tokens.append(i)
+        #             self.token2idx[token] = i
+        #     self.extra_tokens = torch.tensor(self.extra_tokens)
 
 
         # # for WMT16
         # if self.split == 'train':
         #     return
 
-        self.vocab_task = vocab_task
-        self.top_logits = None
+        # self.vocab_task = vocab_task
+        # self.top_logits = None
+        #
+        # self.generate_top_logits()
+        # self.generate_tgt_vocab_vp()
+        # self.generate_tgt_mapped_vp()
+        #
+        # if ((self.tgt_vocab < 4).sum(dim=1) != 4).sum() != 0:
+        #     print("tgt_vocab missing mandatory tokens")
+        #     # pdb.set_trace()
 
-        self.generate_top_logits()
-        self.generate_tgt_vocab_vp()
-        self.generate_tgt_mapped_vp()
+    def __getitem__(self, index):
+        example = super().__getitem__(index)
+        example['target_old'] = self.tgt_old[index]
+        if self.tgt_vocab_size is not None:
+            example['target_vocab'] = self.tgt_vocab[index]
+            example['target_mapped'] = self.tgt_mapped[index]
+        if self.tgt_bow:
+            example['target_vocab_nopad'] = self.tgt_vocab_nopad[index]
+            example['target_vocab_bow'] = self.get_bow(index)
+        return example
 
-        if ((self.tgt_vocab < 4).sum(dim=1) != 4).sum() != 0:
-            print("tgt_vocab missing mandatory tokens")
-            # pdb.set_trace()
 
     def generate_top_logits(self):
         filepath = os.path.join(self.preprocessed_path, "{}.vp_logits.pt".format(self.split))
@@ -293,14 +315,13 @@ class LanguagePairDatasetED(LanguagePairDataset):
             print("Generating tgt_vocab...")
             self.tgt_vocab = self.top_logits.sort(descending=True)[1][:, :self.tgt_vocab_size]
 
-            for i in tqdm(range(len(self.tgt))):
-                mandatory_tokens = self.extra_tokens
+            if len(self.extra_tokens) > 0:
+                for i in tqdm(range(len(self.tgt))):
+                    ix = self.tgt_vocab[i].view(1, -1).eq(self.extra_tokens.view(-1, 1)).sum(0) == 0
+                    extra_tokens = self.tgt_vocab[i][ix]
+                    vocab_tokens = torch.cat((self.extra_tokens, extra_tokens))[:self.tgt_vocab_size]
 
-                ix = self.tgt_vocab[i].view(1, -1).eq(mandatory_tokens.view(-1, 1)).sum(0) == 0
-                extra_tokens = self.tgt_vocab[i][ix]
-                vocab_tokens = torch.cat((mandatory_tokens, extra_tokens))[:self.tgt_vocab_size]
-
-                self.tgt_vocab[i] = vocab_tokens
+                    self.tgt_vocab[i] = vocab_tokens
 
             self.tgt_vocab, _ = self.tgt_vocab.sort(dim=1)
 
@@ -356,9 +377,9 @@ class LanguagePairDatasetED(LanguagePairDataset):
             # print(num_correct / num_total)
             # pdb.set_trace()
 
-            pdb.set_trace()
-            print((new_target_sizes != old_target_sizes).sum())
-            print((new_target_sizes - old_target_sizes).mean())
+            # pdb.set_trace()
+            # print((new_target_sizes != old_target_sizes).sum())
+            # print((new_target_sizes - old_target_sizes).mean())
 
         else:
             print("Generating tgt_mapped...")
@@ -377,62 +398,64 @@ class LanguagePairDatasetED(LanguagePairDataset):
                     if self.tgt and target[-1] != eos:
                         target = torch.cat([target, torch.LongTensor([eos])])
 
-                # reconstruct missing tokens. First try looking up 2-char bpe, then 1-char
-                missing_tokens = []
-                for i in target:
-                    if i not in tgt_vocab:
-                        missing_tokens.append(i.item())
-                missing_tokens = torch.tensor(missing_tokens).unique().tolist()
 
-                missing2replacement = {}
-                for i in missing_tokens:
-                    replacement = []
-                    token = self.tgt_dict[i].replace('@@', '')
-                    for idx, char in enumerate(token):
-                        if idx == len(token) - 1 and self.tgt_dict[i][-1] != '@':
-                            lookup = char
-                        else:
-                            lookup = char + '@@'
-                        if lookup not in self.token2idx.keys():
-                            print(lookup)
-                            continue
-                        replacement.append(self.token2idx[lookup])
-                    missing2replacement[i] = replacement
+                if self.num_extra_bpe > 0:
+                    # reconstruct missing tokens. First try looking up 2-char bpe, then 1-char
+                    missing_tokens = []
+                    for i in target:
+                        if i not in tgt_vocab:
+                            missing_tokens.append(i.item())
+                    missing_tokens = torch.tensor(missing_tokens).unique().tolist()
 
-                missing2replacement = {}
-                for i in missing_tokens:
-                    replacement = []
-                    token = self.tgt_dict[i].replace('@@', '')
+                    missing2replacement = {}
+                    for i in missing_tokens:
+                        replacement = []
+                        token = self.tgt_dict[i].replace('@@', '')
+                        for idx, char in enumerate(token):
+                            if idx == len(token) - 1 and self.tgt_dict[i][-1] != '@':
+                                lookup = char
+                            else:
+                                lookup = char + '@@'
+                            if lookup not in self.token2idx.keys():
+                                print(lookup)
+                                continue
+                            replacement.append(self.token2idx[lookup])
+                        missing2replacement[i] = replacement
 
-                    idx = 0
-                    while idx < len(token):
-                        try:
-                            char = token[idx:idx + 2]
-                            if char not in self.token2idx.keys() or char + '@@' not in self.token2idx.keys():
+                    missing2replacement = {}
+                    for i in missing_tokens:
+                        replacement = []
+                        token = self.tgt_dict[i].replace('@@', '')
+
+                        idx = 0
+                        while idx < len(token):
+                            try:
+                                char = token[idx:idx + 2]
+                                if char not in self.token2idx.keys() or char + '@@' not in self.token2idx.keys():
+                                    char = token[idx]
+                                    idx += 1
+                                else:
+                                    idx += 2
+                            except:
                                 char = token[idx]
                                 idx += 1
+
+                            if idx >= len(token) and self.tgt_dict[i][-1] != '@':
+                                lookup = char
                             else:
-                                idx += 2
-                        except:
-                            char = token[idx]
-                            idx += 1
+                                lookup = char + '@@'
+                            if lookup not in self.token2idx.keys():
+                                print(lookup)
+                                continue
+                            replacement.append(self.token2idx[lookup])
+                        missing2replacement[i] = replacement
 
-                        if idx >= len(token) and self.tgt_dict[i][-1] != '@':
-                            lookup = char
-                        else:
-                            lookup = char + '@@'
-                        if lookup not in self.token2idx.keys():
-                            print(lookup)
-                            continue
-                        replacement.append(self.token2idx[lookup])
-                    missing2replacement[i] = replacement
-
-                for i in missing2replacement.keys():
-                    replace_idx = np.where(target == i)[0]
-                    for multiplier, idx in enumerate(replace_idx):
-                        idx = idx + (len(missing2replacement[i]) - 1) * multiplier
-                        target = np.insert(target, idx + 1, missing2replacement[i])
-                        target = np.delete(target, idx)
+                    for i in missing2replacement.keys():
+                        replace_idx = np.where(target == i)[0]
+                        for multiplier, idx in enumerate(replace_idx):
+                            idx = idx + (len(missing2replacement[i]) - 1) * multiplier
+                            target = np.insert(target, idx + 1, missing2replacement[i])
+                            target = np.delete(target, idx)
 
                 new_tgt.append(target)
                 new_tgt_sizes.append(len(target))
@@ -454,17 +477,6 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.tgt_sizes = np.array(new_tgt_sizes)
 
             torch.save((self.tgt_mapped, self.tgt, self.tgt_sizes), filepath)
-
-    def __getitem__(self, index):
-        example = super().__getitem__(index)
-        if self.tgt_vocab_size is not None:
-            example['target_vocab'] = self.tgt_vocab[index]
-            example['target_mapped'] = self.tgt_mapped[index]
-
-        example['target_vocab_nopad'] = self.tgt_vocab_nopad[index]
-        if self.tgt_bow:
-            example['target_vocab_bow'] = self.get_bow(index)
-        return example
 
 
     def generate_tgt_vocab(self):
