@@ -6,6 +6,8 @@ modeling and other text generation tasks.
 
 ### What's New:
 
+- November 2019: [BART model and code released](examples/bart/README.md)
+- November 2019: [XLM-R models and code released](examples/xlmr/README.md)
 - September 2019: [Nonautoregressive translation code released](examples/nonautoregressive_translation/README.md)
 - August 2019: [WMT'19 models released](examples/wmt19/README.md)
 - July 2019: fairseq relicensed under MIT license
@@ -99,6 +101,7 @@ as well as example training and evaluation commands.
 
 - [Translation](examples/translation/README.md): convolutional and transformer models are available
 - [Language Modeling](examples/language_model/README.md): convolutional and transformer models are available
+- [wav2vec](examples/wav2vec/README.md): wav2vec large model is available
 
 We also have more detailed READMEs to reproduce results from specific papers:
 - [Jointly Learning to Align and Translate with Transformer Models (Garg et al., 2019)](examples/joint_alignment_translation/README.md )

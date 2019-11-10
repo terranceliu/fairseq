@@ -173,8 +173,6 @@ def get_parser(desc, default_task='translation'):
     parser.add_argument('--tensorboard-logdir', metavar='DIR', default='',
                         help='path to save logs for tensorboard, should match --logdir '
                              'of running tensorboard (default: no tensorboard logging)')
-    parser.add_argument("--tbmf-wrapper", action="store_true",
-                        help="[FB only] ")
     parser.add_argument('--seed', default=1, type=int, metavar='N',
                         help='pseudo random number generator seed')
     parser.add_argument('--cpu', action='store_true', help='use CPU instead of CUDA')
@@ -193,6 +191,8 @@ def get_parser(desc, default_task='translation'):
                         help='threshold FP16 loss scale from below')
     parser.add_argument('--user-dir', default=None,
                         help='path to a python module containing custom extensions (tasks and/or architectures)')
+    parser.add_argument('--empty-cache-freq', default=0, type=int,
+                        help='how often to clear the PyTorch CUDA cache (0 to disable)')
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():
@@ -500,7 +500,7 @@ def add_generation_args(parser):
     group.add_argument('--print-step', action='store_true')
 
     # arguments for iterative refinement generator
-    group.add_argument('---iter-decode-eos-penalty', default=0.0, type=float, metavar='N',
+    group.add_argument('--iter-decode-eos-penalty', default=0.0, type=float, metavar='N',
                        help='if > 0.0, it penalized early-stopping in decoding.')
     group.add_argument('--iter-decode-max-iter', default=10, type=int, metavar='N',
                        help='maximum iterations for iterative refinement.')
