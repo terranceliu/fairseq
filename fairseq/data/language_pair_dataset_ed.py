@@ -8,6 +8,7 @@ import os
 import torch
 
 from . import data_utils, FairseqDataset, LanguagePairDataset
+
 from tqdm import tqdm
 
 import pdb
@@ -48,8 +49,12 @@ def collate(
         align_weights = align_tgt_c[align_tgt_i[np.arange(len(align_tgt))]]
         return 1. / align_weights.float()
 
+    if samples[0].get('source_roberta', None) is not None:
+        src_tokens = merge('source_roberta', left_pad=left_pad_source)
+    else:
+        src_tokens = merge('source', left_pad=left_pad_source)
+
     id = torch.LongTensor([s['id'] for s in samples])
-    src_tokens = merge('source', left_pad=left_pad_source)
     # sort by descending source length
     src_lengths = torch.LongTensor([s['source'].numel() for s in samples])
     src_lengths, sort_order = src_lengths.sort(descending=True)
@@ -194,7 +199,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
         shuffle=True, input_feeding=True,
         remove_eos_from_source=False, append_eos_to_target=False,
         align_dataset=None, tgt_vocab_size=None, perfect_oracle=False,
-        tgt_bow=False,
+        tgt_bow=False, use_roberta=False, ft_roberta=False,
         vocab_task=None,
     ):
         super().__init__(src, src_sizes, src_dict,
@@ -218,14 +223,12 @@ class LanguagePairDatasetED(LanguagePairDataset):
         self.tgt_vocab = None
         self.tgt_mapped = None
         self.tgt_vocab_bow = None
-        self.tgt_vocab_nopad = None
 
         self.mandatory_tokens = torch.tensor(
             [self.tgt_dict.bos(), self.tgt_dict.pad(), self.tgt_dict.eos(), self.tgt_dict.unk()])
 
         if self.tgt_vocab_size is not None:
             self.top_tokens = torch.arange(self.tgt_vocab_size)
-
             if self.tgt_vocab_size == len(tgt_dict):
                 self.tgt_vocab = torch.arange(self.tgt_vocab_size).repeat(1,len(tgt)).view(len(tgt),-1).long()
                 self.tgt_mapped = self.tgt
@@ -234,10 +237,25 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.generate_tgt_vocab()
             self.generate_tgt_mapped()
 
+        self.tgt_vocab_padded = None
+        self.tgt_vocab_lengths = None
+        self.generate_tgt_vocab_padded()
 
-        # self.generate_tgt_vocab_nopad()
-        # if self.tgt_bow:
-        #     self.generate_tgt_vocab_bow()
+        self.use_roberta = use_roberta
+        self.ft_roberta = ft_roberta
+        self.src_roberta_tokens = None
+        self.src_roberta_feats = None
+
+        if self.use_roberta:
+            from fairseq.models.roberta import RobertaModel
+            self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.large', checkpoint_file='model.pt')
+            self.roberta = self.roberta
+            self.generate_roberta_tokens()
+            # if self.ft_roberta:
+            #     self.generate_roberta_tokens()
+            # else:
+            #     self.generate_roberta_features()
+            del self.roberta
 
 
         # self.num_extra_bpe = 1
@@ -251,7 +269,6 @@ class LanguagePairDatasetED(LanguagePairDataset):
         #             self.extra_tokens.append(i)
         #             self.token2idx[token] = i
         #     self.extra_tokens = torch.tensor(self.extra_tokens)
-
 
         # # for WMT16
         # if self.split == 'train':
@@ -268,6 +285,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
         #     print("tgt_vocab missing mandatory tokens")
         #     # pdb.set_trace()
 
+
     def __getitem__(self, index):
         example = super().__getitem__(index)
         example['target_old'] = self.tgt_old[index]
@@ -275,15 +293,59 @@ class LanguagePairDatasetED(LanguagePairDataset):
             example['target_vocab'] = self.tgt_vocab[index]
             example['target_mapped'] = self.tgt_mapped[index]
         if self.tgt_bow:
-            example['target_vocab_nopad'] = self.tgt_vocab_nopad[index]
-            example['target_vocab_bow'] = self.get_bow(index)
+            tgt_vocab_len = self.tgt_vocab_lengths[index]
+            example['target_vocab_nopad'] = self.tgt_vocab_padded[index, :tgt_vocab_len]
+        if self.use_roberta:
+            if self.src_roberta_tokens is not None:
+                example['source_roberta'] = self.src_roberta_tokens[index]
+            else:
+                example['source_roberta'] = self.src_roberta_feats[index]
         return example
+
+    def generate_roberta_tokens(self):
+        filepath = os.path.join(self.preprocessed_path, "{}.roberta_tokens.pt".format(self.split))
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            print("Found preprocessed filed for src_roberta_tokens!")
+            self.src_roberta_tokens = torch.load(filepath)
+        else:
+            print("Generating src_roberta_tokens...")
+            self.roberta.eval()
+            self.src_roberta_tokens = []
+            for idx, src in enumerate(tqdm(self.src)):
+                sent = []
+                for token in src:
+                    if token <= 3:
+                        continue
+                    sent.append(self.src_dict[token])
+                sent = " ".join(sent)
+                tokens = self.roberta.encode(sent)
+                self.src_roberta_tokens.append(tokens)
+
+            torch.save(self.src_roberta_tokens, filepath)
+
+    def generate_roberta_features(self):
+        filepath = os.path.join(self.preprocessed_path, "{}.roberta_feats.pt".format(self.split))
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            print("Found preprocessed filed for src_roberta_feats!")
+            self.src_roberta_feats = torch.load(filepath)
+        else:
+            print("Generating src_roberta_feats...")
+            if self.src_roberta_tokens is None:
+                self.generate_roberta_tokens()
+
+            self.src_roberta_feats = torch.zeros((len(self.src), 1024)).cuda()
+            for idx, tokens in enumerate(tqdm(self.src_roberta_tokens)):
+                last_layer_features = self.roberta.extract_features(tokens.cuda()).mean(dim=1)[0]
+                self.src_roberta_feats[idx] = last_layer_features
+
+            self.src_roberta_tokens = None
+            torch.save(self.src_roberta_feats, filepath)
 
 
     def generate_top_logits(self):
         filepath = os.path.join(self.preprocessed_path, "{}.vp_logits.pt".format(self.split))
         if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for self.top_logits (vp)!")
+            print("Found preprocessed file for top_logits (vp)!")
             self.top_logits = torch.load(filepath)
         else:
             print("Generating top_logits...")
@@ -292,7 +354,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             path = 'checkpoints/wmt16.en-de.joined-dict.transformer_ott2018/vp_mlp_losstest/checkpoint_best.pt'
             state = torch.load(path)
             args = state['args']
-            model = self.vocab_task.build_model(args)
+            model = self.vocab_task.build_model(args).cuda()
             model.load_state_dict(state['model'], strict=True)
 
             self.top_logits = []
@@ -302,6 +364,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.top_logits = torch.cat(self.top_logits)
 
             torch.save(self.top_logits, filepath)
+            del model
 
     def generate_tgt_vocab_vp(self):
         filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_vp_{}_extra{}.pt".format(
@@ -309,7 +372,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
         # if self.split != 'train':
         if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for self.tgt_vocab (vp)!")
+            print("Found preprocessed file for tgt_vocab (vp)!")
             self.tgt_vocab = torch.load(filepath)
         else:
             print("Generating tgt_vocab...")
@@ -332,7 +395,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.split, self.tgt_vocab_size, self.num_extra_bpe))
 
         if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for self.tgt_mapped (vp)!")
+            print("Found preprocessed file for tgt_mapped (vp)!")
             # self.tgt_mapped, self.tgt, self.tgt_sizes = torch.load(filepath)
 
             # Debugging
@@ -484,7 +547,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.split, self.tgt_vocab_size, self.perfect_oracle))
 
         if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for self.tgt_vocab!")
+            print("Found preprocessed file for tgt_vocab!")
             self.tgt_vocab = torch.load(filepath)
         else:
             print("Generating tgt_vocab...")
@@ -513,7 +576,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.split, self.tgt_vocab_size, self.perfect_oracle))
 
         if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for self.tgt_mapped!")
+            print("Found preprocessed file for tgt_mapped!")
             self.tgt_mapped = torch.load(filepath)
         else:
             print("Generating tgt_mapped...")
@@ -541,87 +604,32 @@ class LanguagePairDatasetED(LanguagePairDataset):
             torch.save(self.tgt_mapped, filepath)
 
 
-    def generate_tgt_vocab_nopad(self):
-        filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_nopad.pt".format(self.split))
+    def generate_tgt_vocab_padded(self):
+        filepath_pad = os.path.join(self.preprocessed_path, "{}.tgt_vocab_padded.pt".format(self.split))
+        filepath_lengths = os.path.join(self.preprocessed_path, "{}.tgt_vocab_lengths.pt".format(self.split))
 
-        if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for tgt_vocab_nopad!")
-            self.tgt_vocab_nopad = torch.load(filepath)
+        if os.path.exists(filepath_pad) and os.path.isfile(filepath_pad):
+            print("Found preprocessed file for tgt_vocab_padded!")
+            self.tgt_vocab_padded = torch.load(filepath_pad)
+            self.tgt_vocab_lengths = torch.load(filepath_lengths)
         else:
-            print("Generating tgt_vocab_nopad..")
-            num_samples = len(self.tgt)
-
-            self.tgt_vocab_nopad = []
-            for idx in tqdm(range(num_samples)):
-                tgt_tokens = self.tgt[idx]
-                tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
-                tgt_tokens = torch.unique(tgt_tokens)
-                self.tgt_vocab_nopad.append(tgt_tokens)
-
-            torch.save(self.tgt_vocab_nopad, filepath)
-
-
-    def generate_tgt_vocab_bow(self):
-        filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_bow.pt".format(self.split))
-
-        if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for tgt_vocab_bow!")
-            indices, bow_size = torch.load(filepath)
-        else:
-            print("Generating tgt_vocab_bow...")
-            num_samples = len(self.tgt)
-            tgt_full_vocab_size = len(self.tgt_dict)
-            bow_size = torch.Size((num_samples, tgt_full_vocab_size))
-
-            indices_0 = []
-            indices_1 = []
-
-            indices_0_temp = torch.tensor([]).long()
-            indices_1_temp = torch.tensor([]).long()
-            count_temp = 0
-
+            print("Generating tgt_vocab_padded..")
+            tgt_vocab_nopad = []
             for idx in tqdm(range(len(self.tgt))):
                 tgt_tokens = self.tgt[idx]
                 tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
+                tgt_tokens = torch.unique(tgt_tokens)
+                tgt_vocab_nopad.append(tgt_tokens)
 
-                i1 = torch.unique(tgt_tokens).long()
-                i0 = idx * torch.ones(len(i1)).long()
+            self.tgt_vocab_lengths = torch.tensor([len(x) for x in tgt_vocab_nopad])
+            max_length = self.tgt_vocab_lengths.max()
 
-                indices_0.append(i0)
-                indices_1.append(i1)
-                count_temp += len(i0)
+            self.tgt_vocab_padded = torch.ones((len(tgt_vocab_nopad), max_length)).long()
+            for idx, tgt_vocab in enumerate(tqdm(tgt_vocab_nopad)):
+                self.tgt_vocab_padded[idx, :len(tgt_vocab)] = tgt_vocab
 
-                # to address memory issues
-                if count_temp > 1e6:
-                    temp_0 = torch.cat(indices_0)
-                    temp_1 = torch.cat(indices_1)
-
-                    indices_0 = []
-                    indices_1 = []
-                    count_temp = 0
-
-                    indices_0_temp = torch.cat((indices_0_temp, temp_0))
-                    indices_1_temp = torch.cat((indices_1_temp, temp_1))
-
-            indices_0 = torch.cat((indices_0_temp, torch.cat(indices_0)))
-            indices_1 = torch.cat((indices_1_temp, torch.cat(indices_1)))
-            indices = torch.stack([indices_0, indices_1]).long()
-
-            torch.save((indices, bow_size), filepath)
-
-        # values = torch.ones(indices.shape[1]).long()
-        # self.tgt_vocab_bow = torch.sparse.LongTensor(indices, values, bow_size)
-        self.tgt_vocab_bow = indices, bow_size
-
-
-    def get_bow(self, index):
-        bow = torch.zeros(len(self.tgt_dict)).long()
-        # i = self.tgt_vocab_bow[0]
-        # nonzero_indices = (i[1][i[0] == index])
-        nonzero_indices = self.tgt_vocab_nopad[index]
-        bow[nonzero_indices] = 1
-        return bow
-
+            torch.save(self.tgt_vocab_padded, filepath_pad)
+            torch.save(self.tgt_vocab_lengths, filepath_lengths)
 
     def collater(self, samples):
         return collate(

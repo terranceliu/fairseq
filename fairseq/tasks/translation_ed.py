@@ -29,7 +29,7 @@ def load_langpair_dataset(
     left_pad_source, left_pad_target, max_source_positions,
     max_target_positions, prepend_bos=False, load_alignments=False,
     tgt_vocab_size=None, perfect_oracle=False, tgt_bow=False,
-    vocab_task = None,
+    vocab_task=None, use_roberta=False, ft_roberta=False,
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
@@ -98,6 +98,8 @@ def load_langpair_dataset(
         perfect_oracle=perfect_oracle,
         tgt_bow=tgt_bow,
         vocab_task=vocab_task,
+        use_roberta=use_roberta,
+        ft_roberta=ft_roberta
     )
 
 @register_task('translation_ed')
@@ -154,6 +156,8 @@ class TranslationEDTask(TranslationTask):
                             help='perfect oracle')
         parser.add_argument('--tgt-bow', action='store_true',
                             help='convert target vocab to bag of words')
+        parser.add_argument('--use-roberta', action='store_true')
+        parser.add_argument('--ft-roberta', action='store_true')
         # fmt: on
 
     def __init__(self, args, src_dict, tgt_dict):
@@ -182,4 +186,6 @@ class TranslationEDTask(TranslationTask):
             perfect_oracle=self.args.perfect_oracle,
             tgt_bow=self.args.tgt_bow,
             vocab_task=self.vocab_task,
+            use_roberta=self.args.use_roberta,
+            ft_roberta=self.args.ft_roberta,
         )

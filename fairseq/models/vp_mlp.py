@@ -146,6 +146,8 @@ class VP_MLP(FairseqEncoderDecoderModel):
             dropout_in=args.encoder_dropout_in,
             dropout_out=args.encoder_dropout_out,
             pretrained_embed=pretrained_encoder_embed,
+            use_roberta=args.use_roberta,
+            ft_roberta=args.ft_roberta,
         )
         decoder = MLPDecoder(
             dictionary=task.target_dictionary,
@@ -160,12 +162,18 @@ class VP_MLP(FairseqEncoderDecoderModel):
         return cls(encoder, decoder)
 
     def get_targets(self, sample, net_output, **kwargs):
-        return sample['target_vocab_nopad']
-    #     return sample['target_vocab_bow']
-    #
-    # def get_target_weights(self, targets, net_output):
-    #     weights = targets * 10 + 1 - targets
-    #     return weights
+        # return sample['target_vocab_nopad']
+
+        tgt_vocab = sample['target_vocab_nopad']
+        bow = torch.zeros((len(tgt_vocab), 100000)).long().cuda()
+        helper_ix = torch.arange(tgt_vocab.shape[0]).unsqueeze(0).T.expand(tgt_vocab.shape)
+        bow[helper_ix, tgt_vocab] = 1
+
+        return bow.long()
+
+    def get_target_weights(self, targets, net_output):
+        weights = targets * 10 + 1 - targets
+        return weights
 
     def get_logits(self, net_output):
         return net_output
@@ -178,12 +186,13 @@ class MLPEncoder(FairseqEncoder):
     def __init__(
             self, dictionary, embed_dim=512, hidden_size=512,
             dropout_in=0.2, dropout_out=0.2, pretrained_embed=None,
+            use_roberta=False, ft_roberta=False
     ):
         super().__init__(dictionary)
         self.dropout_in = dropout_in
         self.dropout_out = dropout_out
+        self.embed_dim = embed_dim
         self.hidden_size = hidden_size
-        output_units = hidden_size
         self.output_units = hidden_size
 
         num_embeddings = len(dictionary)
@@ -193,29 +202,51 @@ class MLPEncoder(FairseqEncoder):
         else:
             self.embed_tokens = pretrained_embed
 
-        self.fc_in = Linear(embed_dim, hidden_size)
-        self.hidden = Linear(hidden_size, hidden_size)
-        self.fc_out = Linear(hidden_size, output_units)
+        self.use_roberta = use_roberta
+        self.ft_roberta = ft_roberta
+        if self.use_roberta:
+            self.embed_dim = 1024
+            from fairseq.models.roberta import RobertaModel
+            self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.large',
+                                                        checkpoint_file='model.pt').cuda()
+            for child in self.roberta.children():
+                for idx, param in enumerate(child.parameters()):
+                    param.requires_grad = self.ft_roberta
+
+
+        self.fc_in = Linear(self.embed_dim, self.hidden_size)
+        self.hidden1 = Linear(self.hidden_size, self.hidden_size)
+        self.fc_out = Linear(self.hidden_size, self.output_units)
+
+        self.bn_in = nn.BatchNorm1d(self.hidden_size)
+        self.bn_hidden = nn.BatchNorm1d(self.hidden_size)
+        self.bn_out = nn.BatchNorm1d(self.hidden_size)
+
 
     def forward(self, src_tokens, src_lengths, **kwargs):
-        x = self.embed_tokens(src_tokens)
+        if self.use_roberta:
+            x = self.roberta.extract_features(src_tokens)
+        else:
+            x = self.embed_tokens(src_tokens)
+
         mask = src_tokens <= 3
         x[mask] = 0
-
-        # x = F.dropout(x, p=self.dropout_in, training=self.training)
         x = x.mean(dim=1)
 
         x = self.fc_in(x)
-        # x = F.dropout(x, p=self.dropout_in, training=self.training)
         x = F.relu(x)
+        x = self.bn_in(x)
+        x = F.dropout(x, p=0.2, training=self.training)
 
-        x = self.hidden(x)
-        # x = F.dropout(x, p=self.dropout_in, training=self.training)
+        x = self.hidden1(x)
         x = F.relu(x)
+        x = self.bn_hidden(x)
+        x = F.dropout(x, p=0.5, training=self.training)
 
         x = self.fc_out(x)
-        # x = F.dropout(x, p=self.dropout_out, training=self.training)
+        x = F.dropout(x, p=0.2, training=self.training)
         x = F.relu(x)
+        x = self.bn_out(x)
 
         return x
 

@@ -79,33 +79,35 @@ def main(args, init_distributed=False):
 
     valid_subsets = args.valid_subset.split(',')
 
-    valid_logits, valid_targets = validate(args, task, model, epoch_itr, valid_subsets, criterion)
 
-    for k in [200, 500, 1000, 2000, 3000]:
-        get_recall(valid_logits, valid_targets, top_k=k)
+    for k in [100, 1000, 3000, 5000, 10000, 20000, 30000]:
+        valid_logits, valid_targets = validate(args, task, model, epoch_itr, valid_subsets, criterion, top_k=k)
+        get_recall(valid_logits, valid_targets)
 
-def get_recall(lprobs, target, top_k=1000):
-    top = lprobs.sort(descending=True)[1][:, :top_k]
-
+def get_recall(lprobs, target):
     totals = torch.zeros(len(lprobs)).cuda()
     corrects = torch.zeros(len(lprobs)).cuda()
     for idx, tgt in enumerate(target):
         for token in tgt:
-            if token <= 3:
-                continue
+            # if token <= 3:
+            #     continue
 
             totals[idx] += 1
-            if token in top[idx]:
+            if token in lprobs[idx]:
                 corrects[idx] += 1
+
+    k = lprobs.shape[1]
+
+    # pdb.set_trace()
 
     recall = (corrects / totals).mean().item() * 100
     perfect_recall = (corrects == totals).float().mean().item() * 100
 
-    print("k: {}, recall: {:.3f}, perfect recall: {:.3f}".format(top_k, recall, perfect_recall))
+    print("k: {}, recall: {:.3f}, perfect recall: {:.3f}".format(k, recall, perfect_recall))
 
     return recall, perfect_recall
 
-def validate(args, task, model, epoch_itr, subsets, criterion):
+def validate(args, task, model, epoch_itr, subsets, criterion, top_k=100):
     """Evaluate the model on the validation set(s) and return the losses."""
 
     if args.fixed_validation_seed is not None:
@@ -144,8 +146,11 @@ def validate(args, task, model, epoch_itr, subsets, criterion):
             net_output = model(**sample['net_input'])
             logits = model.get_logits(net_output).float()
 
-            valid_logits.append(logits)
-            valid_targets.append(sample['target_vocab_nopad'])
+            # pdb.set_trace()
+            logits = logits.sort(descending=True)[1][:, :top_k]
+
+            valid_logits.append(logits.detach().cpu())
+            valid_targets.append(sample['target_vocab_nopad'].cpu())
 
 
         valid_logits = torch.cat(valid_logits)

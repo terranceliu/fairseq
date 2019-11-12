@@ -31,7 +31,6 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         logits = model.get_logits(net_output).float()
         target = model.get_targets(sample, net_output, expand_steps=False).float()
 
-
         if hasattr(model, 'get_target_weights'):
             weights = model.get_target_weights(target, net_output)
             if torch.is_tensor(weights):
@@ -39,8 +38,19 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         else:
             weights = 1.
 
-        loss = F.binary_cross_entropy_with_logits(logits, target, reduce=False)
+        # size_ns = 10000
+        # mask = torch.zeros((len(target), size_ns)).long().cuda()
+        # mask = mask.random_(0, size_ns)
+        # for idx, tgt in enumerate(target):
+        #     positives = tgt.nonzero().flatten()
+        #     num_positives = len(positives)
+        #     mask[idx, :num_positives] = positives
+        #
+        # logits = logits.gather(dim=-1, index=mask)
+        # weights = weights.gather(dim=-1, index=mask)
+        # target = target.gather(dim=-1, index=mask)
 
+        loss = F.binary_cross_entropy_with_logits(logits, target, reduce=False)
         loss = loss * weights
 
         if reduce:
