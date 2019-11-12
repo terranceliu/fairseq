@@ -10,6 +10,8 @@ import torch
 from . import data_utils, FairseqDataset, LanguagePairDataset
 
 from tqdm import tqdm
+from datetime import timedelta
+import time
 
 import pdb
 
@@ -248,13 +250,13 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
         if self.use_roberta:
             from fairseq.models.roberta import RobertaModel
-            self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.large', checkpoint_file='model.pt')
-            self.roberta = self.roberta
-            self.generate_roberta_tokens()
-            # if self.ft_roberta:
-            #     self.generate_roberta_tokens()
-            # else:
-            #     self.generate_roberta_features()
+            self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.base', checkpoint_file='model.pt')
+            self.roberta = self.roberta.cuda()
+            self.roberta.eval()
+            if self.ft_roberta:
+                self.generate_roberta_tokens()
+            else:
+                self.generate_roberta_features()
             del self.roberta
 
 
@@ -309,7 +311,6 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.src_roberta_tokens = torch.load(filepath)
         else:
             print("Generating src_roberta_tokens...")
-            self.roberta.eval()
             self.src_roberta_tokens = []
             for idx, src in enumerate(tqdm(self.src)):
                 sent = []
@@ -333,12 +334,47 @@ class LanguagePairDatasetED(LanguagePairDataset):
             if self.src_roberta_tokens is None:
                 self.generate_roberta_tokens()
 
-            self.src_roberta_feats = torch.zeros((len(self.src), 1024)).cuda()
-            for idx, tokens in enumerate(tqdm(self.src_roberta_tokens)):
-                last_layer_features = self.roberta.extract_features(tokens.cuda()).mean(dim=1)[0]
-                self.src_roberta_feats[idx] = last_layer_features
+            num_ex = len(self.src)
+            self.src_roberta_feats = torch.zeros(num_ex, 768)
+            token_lengths = torch.tensor([len(x) for x in self.src_roberta_tokens])
 
-            self.src_roberta_tokens = None
+            max_tokens = 3000
+            start = 0
+            time_start = time.time()
+            while start < num_ex:
+                end = start + 1
+                while end + 1 <= num_ex and (end + 1 - start) * token_lengths[start:end + 1].max() < max_tokens:
+                    end += 1
+
+                tokens = self.src_roberta_tokens[start:end]
+                lengths = token_lengths[start:end]
+                max_length = lengths.max()
+
+                x = torch.ones((len(tokens), max_length)).long()
+                for idx, token in enumerate(tokens):
+                    x[idx, :len(token)] = token
+                mask = x != 1
+
+                x = x.cuda()
+                x = self.roberta.extract_features(x).detach()
+                x = x.cpu().numpy()
+                x[mask] = np.nan
+                x = np.nanmean(x, axis=1)
+
+                self.src_roberta_feats[start:end] = torch.tensor(x)
+
+                percent_progress = end / num_ex
+                time_elapsed = time.time() - time_start
+                time_elapsed = timedelta(seconds=time_elapsed).total_seconds()
+                time_remaining = time_elapsed / percent_progress - time_elapsed
+                print("Progress: {:.2f}%, batch_size: {}, elapsed {:.2f}s, remaining {:.2f}s".format(
+                     percent_progress * 100, end - start, time_elapsed, time_remaining))
+
+                start = end
+
+
+            # pdb.set_trace()
+
             torch.save(self.src_roberta_feats, filepath)
 
 
@@ -366,6 +402,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             torch.save(self.top_logits, filepath)
             del model
 
+
     def generate_tgt_vocab_vp(self):
         filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_vp_{}_extra{}.pt".format(
             self.split, self.tgt_vocab_size, self.num_extra_bpe))
@@ -389,6 +426,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.tgt_vocab, _ = self.tgt_vocab.sort(dim=1)
 
             torch.save(self.tgt_vocab, filepath)
+
 
     def generate_tgt_mapped_vp(self):
         filepath = os.path.join(self.preprocessed_path, "{}.tgt_mapped_vp_{}_extra{}.pt".format(
@@ -630,6 +668,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
             torch.save(self.tgt_vocab_padded, filepath_pad)
             torch.save(self.tgt_vocab_lengths, filepath_lengths)
+
 
     def collater(self, samples):
         return collate(

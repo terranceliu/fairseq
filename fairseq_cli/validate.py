@@ -76,6 +76,7 @@ def main(args, init_distributed=False):
         task=task,
     )
     model = models[0].cuda()
+    model.eval()
 
     valid_subsets = args.valid_subset.split(',')
 

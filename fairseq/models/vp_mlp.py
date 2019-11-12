@@ -207,7 +207,7 @@ class MLPEncoder(FairseqEncoder):
         if self.use_roberta:
             self.embed_dim = 1024
             from fairseq.models.roberta import RobertaModel
-            self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.large',
+            self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.base',
                                                         checkpoint_file='model.pt').cuda()
             for child in self.roberta.children():
                 for idx, param in enumerate(child.parameters()):
