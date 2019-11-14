@@ -253,6 +253,10 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.base', checkpoint_file='model.pt')
             self.roberta = self.roberta.cuda()
             self.roberta.eval()
+
+            # self.generate_roberta_tokens()
+            # self.generate_roberta_features()
+
             if self.ft_roberta:
                 self.generate_roberta_tokens()
             else:
@@ -311,11 +315,12 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.src_roberta_tokens = torch.load(filepath)
         else:
             print("Generating src_roberta_tokens...")
+            excluded_tokens = [self.src_dict.bos(), self.src_dict.eos(), self.src_dict.pad()]
             self.src_roberta_tokens = []
             for idx, src in enumerate(tqdm(self.src)):
                 sent = []
                 for token in src:
-                    if token <= 3:
+                    if token in excluded_tokens:
                         continue
                     sent.append(self.src_dict[token])
                 sent = " ".join(sent)
@@ -338,7 +343,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
             self.src_roberta_feats = torch.zeros(num_ex, 768)
             token_lengths = torch.tensor([len(x) for x in self.src_roberta_tokens])
 
-            max_tokens = 3000
+            max_tokens = 5000
             start = 0
             time_start = time.time()
             while start < num_ex:
@@ -353,13 +358,19 @@ class LanguagePairDatasetED(LanguagePairDataset):
                 x = torch.ones((len(tokens), max_length)).long()
                 for idx, token in enumerate(tokens):
                     x[idx, :len(token)] = token
-                mask = x != 1
+                x = x[:, :512] # roberta doesn't allow sentence lengths > 512
+                mask = (x == 1) # removing padding
 
                 x = x.cuda()
                 x = self.roberta.extract_features(x).detach()
                 x = x.cpu().numpy()
                 x[mask] = np.nan
                 x = np.nanmean(x, axis=1)
+
+                # make sure we don't have nans for some reason
+                if np.abs(x.mean()) < 0:
+                    print("error: nan in features")
+                    pdb.set_trace()
 
                 self.src_roberta_feats[start:end] = torch.tensor(x)
 
@@ -372,8 +383,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
                 start = end
 
-
-            # pdb.set_trace()
+            self.src_roberta_tokens = None
 
             torch.save(self.src_roberta_feats, filepath)
 

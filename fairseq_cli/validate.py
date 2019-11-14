@@ -48,28 +48,6 @@ def main(args, init_distributed=False):
     for valid_sub_split in args.valid_subset.split(','):
         task.load_dataset(valid_sub_split, combine=False, epoch=0)
 
-    # Build model and criterion
-    model = task.build_model(args)
-    criterion = task.build_criterion(args)
-    print(model)
-    print('| model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
-    print('| num. model params: {} (num. trained: {})'.format(
-        sum(p.numel() for p in model.parameters()),
-        sum(p.numel() for p in model.parameters() if p.requires_grad),
-    ))
-
-    # Build trainer
-    trainer = Trainer(args, task, model, criterion)
-    print('| training on {} GPUs'.format(args.distributed_world_size))
-    print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
-        args.max_tokens,
-        args.max_sentences,
-    ))
-
-    # Load the latest checkpoint if one is available and restore the
-    # corresponding train iterator
-    extra_state, epoch_itr = checkpoint_utils.load_checkpoint(args, trainer)
-
     models, _model_args = checkpoint_utils.load_model_ensemble(
         args.path.split(':'),
         # arg_overrides=eval(args.model_overrides),
@@ -80,26 +58,59 @@ def main(args, init_distributed=False):
 
     valid_subsets = args.valid_subset.split(',')
 
+    valid_logits, valid_targets, src_lengths = validate(args, task, model, valid_subsets, top_k=50000)
 
-    for k in [100, 1000, 3000, 5000, 10000, 20000, 30000]:
-        valid_logits, valid_targets = validate(args, task, model, epoch_itr, valid_subsets, criterion, top_k=k)
-        get_recall(valid_logits, valid_targets)
+    # min_top_k = []
+    # for i in range(len(valid_logits)):
+    #     logit = valid_logits[i]
+    #     target = valid_targets[i]
+    #     top_k = []
+    #     for token in target:
+    #         index = (logit == token).nonzero()
+    #         top_k.append(index)
+    #     top_k = torch.tensor(top_k)
+    #     min_top_k.append(top_k.max() + 1)
+    # min_top_k = torch.tensor(min_top_k)
+    #
+    # top_k_dict = {}
+    # for i in range(src_lengths.max()):
+    #     top_k_dict[i + 1] = []
+    # for i in range(len(src_lengths)):
+    #     length = src_lengths[i].item()
+    #     k = min_top_k[i].item()
+    #     top_k_dict[length].append(k)
+    #
+    # for k in top_k_dict.keys():
+    #     x = np.array(top_k_dict[k])
+    #     if len(x) == 0:
+    #         continue
+    #     mean = x.mean()
+    #     median = np.median(x)
+    #     max = x.max()
+    #     min = x.min()
+    #     std = x.std()
+    #     print("k: {}, mean: {:.2f}, median: {}, max: {}, min: {}, std: {:.2f}".format(
+    #         k, mean, median, max, min, std))
+
+    # for k in [1000, 2000, 3000, 4000, 5000, 6000, 9000, 12000, 15000, 18000, 21000, 24000, 27000, 30000]:
+    for k in [100, 1000, 3000, 5000, 10000, 20000, 30000, 40000, 50000, 75000]:
+        logits = valid_logits[:, :k]
+        get_recall(logits, valid_targets)
+
+    # for k in [100, 1000, 3000, 5000, 10000, 20000, 30000]:
+    #     valid_logits, valid_targets = validate(args, task, model, epoch_itr, valid_subsets, criterion, top_k=k)
+    #     get_recall(valid_logits, valid_targets)
 
 def get_recall(lprobs, target):
     totals = torch.zeros(len(lprobs)).cuda()
     corrects = torch.zeros(len(lprobs)).cuda()
     for idx, tgt in enumerate(target):
         for token in tgt:
-            # if token <= 3:
-            #     continue
-
             totals[idx] += 1
-            if token in lprobs[idx]:
+            if token.int() in lprobs[idx]:
                 corrects[idx] += 1
 
     k = lprobs.shape[1]
-
-    # pdb.set_trace()
 
     recall = (corrects / totals).mean().item() * 100
     perfect_recall = (corrects == totals).float().mean().item() * 100
@@ -108,15 +119,13 @@ def get_recall(lprobs, target):
 
     return recall, perfect_recall
 
-def validate(args, task, model, epoch_itr, subsets, criterion, top_k=100):
+def validate(args, task, model, subsets, top_k=None):
     """Evaluate the model on the validation set(s) and return the losses."""
 
     if args.fixed_validation_seed is not None:
         # set fixed seed for every validation
         utils.set_torch_seed(args.fixed_validation_seed)
 
-    valid_logits = []
-    valid_targets = []
     for subset in subsets:
         # Initialize data iterator
         itr = task.get_batch_iterator(
@@ -136,25 +145,39 @@ def validate(args, task, model, epoch_itr, subsets, criterion, top_k=100):
         ).next_epoch_itr(shuffle=False)
 
         progress = progress_bar.build_progress_bar(
-            args, itr, epoch_itr.epoch,
+            args, itr, 0,
             prefix='valid on \'{}\' subset'.format(subset),
             no_progress_bar='simple'
         )
 
+        num_examples = len(task.dataset(subset))
+        if top_k is None:
+            top_k = len(task.dataset('valid').tgt_dict)
+        valid_logits = torch.zeros((num_examples, top_k), dtype=torch.int32)
+        valid_targets = []
+        src_lengths = []
+        i = 0
+
+
+        # pdb.set_trace()
+
         for idx, sample in enumerate(progress):
+            batch_size = len(sample['target'])
+
             if torch.cuda.is_available():
                 sample = utils.move_to_cuda(sample)
             net_output = model(**sample['net_input'])
             logits = model.get_logits(net_output).float()
+            logits = logits.sort(descending=True)[1]
+            logits = logits[:, :top_k]
 
-            # pdb.set_trace()
-            logits = logits.sort(descending=True)[1][:, :top_k]
-
-            valid_logits.append(logits.detach().cpu())
+            valid_logits[i:i + batch_size] = logits.detach().cpu()
+            src_lengths.append(sample['net_input']['src_lengths'].cpu())
             valid_targets.append(sample['target_vocab_nopad'].cpu())
 
+            i += batch_size
 
-        valid_logits = torch.cat(valid_logits)
+        src_lengths = torch.cat(src_lengths)
 
         temp = []
         for x in valid_targets:
@@ -162,7 +185,7 @@ def validate(args, task, model, epoch_itr, subsets, criterion, top_k=100):
                 temp.append(torch.unique(target_vocab))
         valid_targets = temp
 
-    return valid_logits, valid_targets
+    return valid_logits, valid_targets, src_lengths
 
 
 def distributed_main(i, args, start_rank=0):
@@ -208,7 +231,6 @@ def cli_main():
     else:
         # single GPU training
         main(args)
-
 
 if __name__ == '__main__':
     cli_main()
