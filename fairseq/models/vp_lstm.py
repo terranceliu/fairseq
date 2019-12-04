@@ -164,14 +164,20 @@ class VP_MLP(FairseqEncoderDecoderModel):
         # return sample['target_vocab_nopad']
 
         tgt_vocab = sample['target_vocab_nopad']
-        bow = torch.zeros((len(tgt_vocab), self.encoder.num_embeddings)).long().cuda()
+        bow = torch.zeros((len(tgt_vocab), self.decoder.num_embeddings)).long().cuda()
         helper_ix = torch.arange(tgt_vocab.shape[0]).unsqueeze(0).T.expand(tgt_vocab.shape)
         bow[helper_ix, tgt_vocab] = 1
 
         return bow.long()
 
     def get_target_weights(self, targets, net_output):
-        weights = targets * 10 + 1 - targets
+        num_positives = targets.sum(dim=1)
+        num_negatives = targets.shape[1] - num_positives
+        upweight = num_negatives/num_positives
+        weights = targets * upweight.unsqueeze(-1) + 1 - targets
+
+        # weights = targets * 10 + 1 - targets
+
         return weights
 
     def get_logits(self, net_output):

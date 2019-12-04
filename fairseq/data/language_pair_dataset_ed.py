@@ -200,9 +200,9 @@ class LanguagePairDatasetED(LanguagePairDataset):
         max_source_positions=1024, max_target_positions=1024,
         shuffle=True, input_feeding=True,
         remove_eos_from_source=False, append_eos_to_target=False,
-        align_dataset=None, tgt_vocab_size=None, perfect_oracle=False,
-        tgt_bow=False, use_roberta=False, ft_roberta=False,
-        vocab_task=None,
+        align_dataset=None,
+        tgt_vocab_size=None, oracle=False, run_vp=False,
+        use_roberta=False, ft_roberta=False, vocab_task=None,
     ):
         super().__init__(src, src_sizes, src_dict,
             tgt=tgt, tgt_sizes=tgt_sizes, tgt_dict=tgt_dict,
@@ -217,37 +217,51 @@ class LanguagePairDatasetED(LanguagePairDataset):
         self.preprocessed_path = os.path.join(data_path, "ed_preprocessed")
 
         self.tgt_vocab_size = tgt_vocab_size
-        self.perfect_oracle = perfect_oracle
-        self.tgt_bow = tgt_bow
+        self.oracle = oracle
+        self.run_vp = run_vp
 
         self.tgt_old = self.tgt
 
         self.tgt_vocab = None
         self.tgt_mapped = None
+        self.top_logits = None
+        self.extra_bpe_tokens = None
+        self.bpe2idx = None
+
         self.tgt_vocab_bow = None
+        self.tgt_vocab_padded = None
+        self.tgt_vocab_lengths = None
+
+        if self.run_vp:
+            self.generate_tgt_vocab_padded()
+            return # we can just stop here since we're not doing translation
 
         self.mandatory_tokens = torch.tensor(
             [self.tgt_dict.bos(), self.tgt_dict.pad(), self.tgt_dict.eos(), self.tgt_dict.unk()])
 
+
+
         if self.tgt_vocab_size is not None:
-            self.top_tokens = torch.arange(self.tgt_vocab_size)
-            if self.tgt_vocab_size == len(tgt_dict):
-                self.tgt_vocab = torch.arange(self.tgt_vocab_size).repeat(1,len(tgt)).view(len(tgt),-1).long()
-                self.tgt_mapped = self.tgt
-                return
+            if self.oracle:
+                self.generate_tgt_vocab()
+                self.generate_tgt_mapped()
+            else:
+                self.num_extra_bpe = 1
+                if self.num_extra_bpe > 0:
+                    self.generate_extra_bpe()
+                self.generate_top_logits()
+                self.generate_tgt_vocab_vp()
+                self.generate_tgt_mapped_vp()
 
-            self.generate_tgt_vocab()
-            self.generate_tgt_mapped()
+                # self.get_recall(self.tgt_vocab, self.tgt)
+                # pdb.set_trace()
 
-        self.tgt_vocab_padded = None
-        self.tgt_vocab_lengths = None
-        self.generate_tgt_vocab_padded()
 
         self.use_roberta = use_roberta
         self.ft_roberta = ft_roberta
+        self.vocab_task = vocab_task
         self.src_roberta_tokens = None
         self.src_roberta_feats = None
-
         if self.use_roberta:
             from fairseq.models.roberta import RobertaModel
             self.roberta = RobertaModel.from_pretrained('checkpoints/pretrained/roberta.base', checkpoint_file='model.pt')
@@ -263,42 +277,35 @@ class LanguagePairDatasetED(LanguagePairDataset):
                 self.generate_roberta_features()
             del self.roberta
 
-
-        # self.num_extra_bpe = 1
-        # self.extra_tokens = []
-        # self.token2idx = {}
-        # if self.num_extra_bpe > 0:
-        #     for i in range(len(self.tgt_dict)):
-        #         token = self.tgt_dict[i]
-        #         token_trunc = token.replace('@', '')
-        #         if len(token_trunc) <= self.num_extra_bpe:
-        #             self.extra_tokens.append(i)
-        #             self.token2idx[token] = i
-        #     self.extra_tokens = torch.tensor(self.extra_tokens)
-
-        # # for WMT16
-        # if self.split == 'train':
-        #     return
-
-        # self.vocab_task = vocab_task
-        # self.top_logits = None
-        #
-        # self.generate_top_logits()
-        # self.generate_tgt_vocab_vp()
-        # self.generate_tgt_mapped_vp()
-        #
         # if ((self.tgt_vocab < 4).sum(dim=1) != 4).sum() != 0:
         #     print("tgt_vocab missing mandatory tokens")
         #     # pdb.set_trace()
 
+    def get_recall(self, lprobs, target):
+        totals = torch.zeros(len(lprobs)).cuda()
+        corrects = torch.zeros(len(lprobs)).cuda()
+        for idx, tgt in enumerate(target):
+            for token in tgt:
+                totals[idx] += 1
+                if token in lprobs[idx]:
+                    corrects[idx] += 1
+
+        k = lprobs.shape[1]
+
+        recall = (corrects / totals).mean().item() * 100
+        perfect_recall = (corrects == totals).float().mean().item() * 100
+
+        print("k: {}, recall: {:.3f}, perfect recall: {:.3f}".format(k, recall, perfect_recall))
+
+        return recall, perfect_recall
 
     def __getitem__(self, index):
         example = super().__getitem__(index)
         example['target_old'] = self.tgt_old[index]
-        if self.tgt_vocab_size is not None:
+        if self.tgt_vocab is not None:
             example['target_vocab'] = self.tgt_vocab[index]
             example['target_mapped'] = self.tgt_mapped[index]
-        if self.tgt_bow:
+        if self.run_vp:
             tgt_vocab_len = self.tgt_vocab_lengths[index]
             example['target_vocab_nopad'] = self.tgt_vocab_padded[index, :tgt_vocab_len]
         if self.use_roberta:
@@ -387,6 +394,49 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
             torch.save(self.src_roberta_feats, filepath)
 
+    def generate_tgt_vocab(self):
+        filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab{}.pt".format(
+            self.split, self.tgt_vocab_size))
+
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            print("Found preprocessed file for tgt_vocab!")
+            self.tgt_vocab = torch.load(filepath)
+        else:
+            print("Generating tgt_vocab...")
+            self.tgt_vocab = torch.ones((len(self.tgt), self.tgt_vocab_size)).long()
+            self.top_tokens = torch.arange(self.tgt_vocab_size)
+
+            for i in range(len(self.tgt)):
+                tgt_tokens = self.tgt[i]
+                tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
+                tgt_tokens = torch.unique(tgt_tokens)
+                assert (tgt_tokens.shape[0] <= self.tgt_vocab_size)
+
+                # if self.oracle:
+                #     self.tgt_vocab[i, :tgt_tokens.shape[0]] = tgt_tokens
+                # else:
+
+                ix = self.top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
+                remaining_tokens = self.top_tokens[ix]
+                vocab_tokens = torch.cat((tgt_tokens, remaining_tokens))[:self.tgt_vocab_size]
+                vocab_tokens, _ = torch.sort(vocab_tokens)
+
+                self.tgt_vocab[i] = vocab_tokens
+
+            torch.save(self.tgt_vocab, filepath)
+
+
+    def generate_extra_bpe(self):
+        self.extra_bpe_tokens = []
+        self.bpe2idx = {}
+        for i in range(len(self.tgt_dict)):
+            token = self.tgt_dict[i]
+            token_trunc = token.replace('@', '')
+            if len(token_trunc) <= self.num_extra_bpe:
+                self.extra_bpe_tokens.append(i)
+                self.bpe2idx[token] = i
+        self.extra_bpe_tokens = torch.tensor(self.extra_bpe_tokens)
+
 
     def generate_top_logits(self):
         filepath = os.path.join(self.preprocessed_path, "{}.vp_logits.pt".format(self.split))
@@ -396,8 +446,10 @@ class LanguagePairDatasetED(LanguagePairDataset):
         else:
             print("Generating top_logits...")
 
-            # path = 'checkpoints/iswlt14_de-en/vp_mlp_binary/checkpoint_best.pt'
-            path = 'checkpoints/wmt16.en-de.joined-dict.transformer_ott2018/vp_mlp_losstest/checkpoint_best.pt'
+            path = 'checkpoints/iswlt14_de-en/vp_lstm_onevsall/checkpoint_best.pt'
+            # path = 'checkpoints/wmt16.en-de.joined-dict.newstest2014_ott2018/vp_lstm_onevsall/checkpoint_best.pt'
+            # path = 'checkpoints/wmt16.en-de.joined-dict.newstest2014_ott2018/vp_mlp_binary_bndo/checkpoint_best.pt'
+            # path = 'checkpoints/wmt14_en_de/vp_lstm/checkpoint_best.pt'
             state = torch.load(path)
             args = state['args']
             model = self.vocab_task.build_model(args).cuda()
@@ -405,9 +457,12 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
             self.top_logits = []
             for src_tokens in tqdm(self.src):
-                net_output = model(src_tokens.unsqueeze(0), None, None)
+                # net_output = model(src_tokens.unsqueeze(0), None, None)
+                src_lengths = torch.tensor(len(src_tokens)).unsqueeze(0).cuda()
+                src_tokens = src_tokens.unsqueeze(0).cuda()
+                net_output = model(src_tokens, src_lengths, None)
                 self.top_logits.append(model.get_logits(net_output).float().detach())
-            self.top_logits = torch.cat(self.top_logits)
+            self.top_logits = torch.cat(self.top_logits).detach().cpu()
 
             torch.save(self.top_logits, filepath)
             del model
@@ -417,24 +472,30 @@ class LanguagePairDatasetED(LanguagePairDataset):
         filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_vp_{}_extra{}.pt".format(
             self.split, self.tgt_vocab_size, self.num_extra_bpe))
 
-        # if self.split != 'train':
         if os.path.exists(filepath) and os.path.isfile(filepath):
             print("Found preprocessed file for tgt_vocab (vp)!")
             self.tgt_vocab = torch.load(filepath)
         else:
             print("Generating tgt_vocab...")
+
             self.tgt_vocab = self.top_logits.sort(descending=True)[1][:, :self.tgt_vocab_size]
 
-            if len(self.extra_tokens) > 0:
+            if self.num_extra_bpe > 0:
                 for i in tqdm(range(len(self.tgt))):
-                    ix = self.tgt_vocab[i].view(1, -1).eq(self.extra_tokens.view(-1, 1)).sum(0) == 0
-                    extra_tokens = self.tgt_vocab[i][ix]
-                    vocab_tokens = torch.cat((self.extra_tokens, extra_tokens))[:self.tgt_vocab_size]
+                    ix = self.tgt_vocab[i].view(1, -1).eq(self.extra_bpe_tokens.view(-1, 1)).sum(0) == 0
+                    remaining_tokens = self.tgt_vocab[i][ix]
+                    vocab_tokens = torch.cat((self.extra_bpe_tokens, remaining_tokens))[:self.tgt_vocab_size]
+                    self.tgt_vocab[i] = vocab_tokens
 
+            elif self.split in ['train']: # 'valid'
+                for i in tqdm(range(len(self.tgt))):
+                    tgt_vocab_true = torch.unique(self.tgt[i])
+                    ix = self.tgt_vocab[i].view(1, -1).eq(tgt_vocab_true.view(-1, 1)).sum(0) == 0
+                    remaining_tokens = self.tgt_vocab[i][ix]
+                    vocab_tokens = torch.cat((tgt_vocab_true, remaining_tokens))[:self.tgt_vocab_size]
                     self.tgt_vocab[i] = vocab_tokens
 
             self.tgt_vocab, _ = self.tgt_vocab.sort(dim=1)
-
             torch.save(self.tgt_vocab, filepath)
 
 
@@ -491,7 +552,6 @@ class LanguagePairDatasetED(LanguagePairDataset):
             # pdb.set_trace()
             # print((new_target_sizes != old_target_sizes).sum())
             # print((new_target_sizes - old_target_sizes).mean())
-
         else:
             print("Generating tgt_mapped...")
 
@@ -508,7 +568,6 @@ class LanguagePairDatasetED(LanguagePairDataset):
                     eos = self.tgt_dict.eos() if self.tgt_dict else self.src_dict.eos()
                     if self.tgt and target[-1] != eos:
                         target = torch.cat([target, torch.LongTensor([eos])])
-
 
                 if self.num_extra_bpe > 0:
                     # reconstruct missing tokens. First try looking up 2-char bpe, then 1-char
@@ -527,10 +586,10 @@ class LanguagePairDatasetED(LanguagePairDataset):
                                 lookup = char
                             else:
                                 lookup = char + '@@'
-                            if lookup not in self.token2idx.keys():
+                            if lookup not in self.bpe2idx.keys():
                                 print(lookup)
                                 continue
-                            replacement.append(self.token2idx[lookup])
+                            replacement.append(self.bpe2idx[lookup])
                         missing2replacement[i] = replacement
 
                     missing2replacement = {}
@@ -542,7 +601,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
                         while idx < len(token):
                             try:
                                 char = token[idx:idx + 2]
-                                if char not in self.token2idx.keys() or char + '@@' not in self.token2idx.keys():
+                                if char not in self.bpe2idx.keys() or char + '@@' not in self.bpe2idx.keys():
                                     char = token[idx]
                                     idx += 1
                                 else:
@@ -555,11 +614,34 @@ class LanguagePairDatasetED(LanguagePairDataset):
                                 lookup = char
                             else:
                                 lookup = char + '@@'
-                            if lookup not in self.token2idx.keys():
+                            if lookup not in self.bpe2idx.keys():
                                 print(lookup)
                                 continue
-                            replacement.append(self.token2idx[lookup])
+                            replacement.append(self.bpe2idx[lookup])
                         missing2replacement[i] = replacement
+
+                    # missing2replacement = {}
+                    # for i in missing_tokens:
+                    #     replacement = []
+                    #     token = self.tgt_dict[i].replace('@@', '')
+                    #
+                    #     idx = 0
+                    #     while idx < len(token):
+                    #         check = idx + 2 < len(token) \
+                    #                 and token[idx:idx + 2] in self.bpe2idx.keys() \
+                    #                 and token[idx:idx + 2] + '@@' in self.bpe2idx.keys()
+                    #         increment = 2 if check else 1
+                    #         lookup = token[idx:idx + increment]
+                    #         if idx >= len(token) and self.tgt_dict[i][-1] != '@':
+                    #             lookup += '@'
+                    #
+                    #         if lookup not in self.bpe2idx.keys():
+                    #             print(lookup)
+                    #             continue
+                    #
+                    #         replacement.append(self.bpe2idx[lookup])
+                    #         idx += increment
+                    #     missing2replacement[i] = replacement
 
                     for i in missing2replacement.keys():
                         replace_idx = np.where(target == i)[0]
@@ -590,38 +672,9 @@ class LanguagePairDatasetED(LanguagePairDataset):
             torch.save((self.tgt_mapped, self.tgt, self.tgt_sizes), filepath)
 
 
-    def generate_tgt_vocab(self):
-        filepath = os.path.join(self.preprocessed_path, "{}.tgt_vocab_{}_oracle{}.pt".format(
-            self.split, self.tgt_vocab_size, self.perfect_oracle))
-
-        if os.path.exists(filepath) and os.path.isfile(filepath):
-            print("Found preprocessed file for tgt_vocab!")
-            self.tgt_vocab = torch.load(filepath)
-        else:
-            print("Generating tgt_vocab...")
-            self.tgt_vocab = torch.ones((len(self.tgt), self.tgt_vocab_size)).long()
-            for i in range(len(self.tgt)):
-                tgt_tokens = self.tgt[i]
-                tgt_tokens = torch.cat((tgt_tokens, self.mandatory_tokens))
-                tgt_tokens = torch.unique(tgt_tokens)
-                assert (tgt_tokens.shape[0] <= self.tgt_vocab_size)
-
-                if self.perfect_oracle:
-                    self.tgt_vocab[i, :tgt_tokens.shape[0]] = tgt_tokens
-                else:
-                    ix = self.top_tokens.view(1, -1).eq(tgt_tokens.view(-1, 1)).sum(0) == 0
-                    extra_tokens = self.top_tokens[ix]
-                    vocab_tokens = torch.cat((tgt_tokens, extra_tokens))[:self.tgt_vocab_size]
-                    vocab_tokens, _ = torch.sort(vocab_tokens)
-
-                    self.tgt_vocab[i] = vocab_tokens
-
-            torch.save(self.tgt_vocab, filepath)
-
-
     def generate_tgt_mapped(self):
-        filepath = os.path.join(self.preprocessed_path, "{}.tgt_mapped_{}_oracle{}.pt".format(
-            self.split, self.tgt_vocab_size, self.perfect_oracle))
+        filepath = os.path.join(self.preprocessed_path, "{}.tgt_mapped{}.pt".format(
+            self.split, self.tgt_vocab_size))
 
         if os.path.exists(filepath) and os.path.isfile(filepath):
             print("Found preprocessed file for tgt_mapped!")

@@ -58,42 +58,16 @@ def main(args, init_distributed=False):
 
     valid_subsets = args.valid_subset.split(',')
 
-    valid_logits, valid_targets, src_lengths = validate(args, task, model, valid_subsets, top_k=50000)
+    # valid_logits, valid_targets, src_lengths = validate(args, task, model, valid_subsets, top_k=50000)
+    valid_logits, valid_targets, src_lengths = validate(args, task, model, valid_subsets, top_k=None)
 
-    # min_top_k = []
-    # for i in range(len(valid_logits)):
-    #     logit = valid_logits[i]
-    #     target = valid_targets[i]
-    #     top_k = []
-    #     for token in target:
-    #         index = (logit == token).nonzero()
-    #         top_k.append(index)
-    #     top_k = torch.tensor(top_k)
-    #     min_top_k.append(top_k.max() + 1)
-    # min_top_k = torch.tensor(min_top_k)
-    #
-    # top_k_dict = {}
-    # for i in range(src_lengths.max()):
-    #     top_k_dict[i + 1] = []
-    # for i in range(len(src_lengths)):
-    #     length = src_lengths[i].item()
-    #     k = min_top_k[i].item()
-    #     top_k_dict[length].append(k)
-    #
-    # for k in top_k_dict.keys():
-    #     x = np.array(top_k_dict[k])
-    #     if len(x) == 0:
-    #         continue
-    #     mean = x.mean()
-    #     median = np.median(x)
-    #     max = x.max()
-    #     min = x.min()
-    #     std = x.std()
-    #     print("k: {}, mean: {:.2f}, median: {}, max: {}, min: {}, std: {:.2f}".format(
-    #         k, mean, median, max, min, std))
+    top_k_dict = get_min_k_precall(valid_logits, valid_targets, src_lengths)
+
+    pdb.set_trace()
 
     # for k in [1000, 2000, 3000, 4000, 5000, 6000, 9000, 12000, 15000, 18000, 21000, 24000, 27000, 30000]:
-    for k in [100, 1000, 3000, 5000, 10000, 20000, 30000, 40000, 50000, 75000]:
+    # for k in [100, 1000, 3000, 5000, 10000, 20000, 30000, 40000, 50000, 75000]:
+    for k in [200, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 6000]:
         logits = valid_logits[:, :k]
         get_recall(logits, valid_targets)
 
@@ -118,6 +92,41 @@ def get_recall(lprobs, target):
     print("k: {}, recall: {:.3f}, perfect recall: {:.3f}".format(k, recall, perfect_recall))
 
     return recall, perfect_recall
+
+def get_min_k_precall(valid_logits, valid_targets, src_lengths):
+    min_top_k = []
+    for i in range(len(valid_logits)):
+        logit = valid_logits[i]
+        target = valid_targets[i]
+        top_k = []
+        for token in target:
+            index = (logit == token).nonzero()
+            top_k.append(index)
+        top_k = torch.tensor(top_k)
+        min_top_k.append(top_k.max() + 1)
+    min_top_k = torch.tensor(min_top_k)
+
+    top_k_dict = {}
+    for i in range(src_lengths.max()):
+        top_k_dict[i + 1] = []
+    for i in range(len(src_lengths)):
+        length = src_lengths[i].item()
+        k = min_top_k[i].item()
+        top_k_dict[length].append(k)
+
+    for k in top_k_dict.keys():
+        x = np.array(top_k_dict[k])
+        if len(x) == 0:
+            continue
+        mean = x.mean()
+        median = np.median(x)
+        max = x.max()
+        min = x.min()
+        std = x.std()
+        print("k: {}, mean: {:.2f}, median: {}, max: {}, min: {}, std: {:.2f}".format(
+            k, mean, median, max, min, std))
+
+    return top_k_dict
 
 def validate(args, task, model, subsets, top_k=None):
     """Evaluate the model on the validation set(s) and return the losses."""
@@ -152,7 +161,7 @@ def validate(args, task, model, subsets, top_k=None):
 
         num_examples = len(task.dataset(subset))
         if top_k is None:
-            top_k = len(task.dataset('valid').tgt_dict)
+            top_k = len(task.dataset(subset).tgt_dict)
         valid_logits = torch.zeros((num_examples, top_k), dtype=torch.int32)
         valid_targets = []
         src_lengths = []
@@ -173,7 +182,7 @@ def validate(args, task, model, subsets, top_k=None):
 
             valid_logits[i:i + batch_size] = logits.detach().cpu()
             src_lengths.append(sample['net_input']['src_lengths'].cpu())
-            valid_targets.append(sample['target_vocab_nopad'].cpu())
+            valid_targets.append(sample['target_vocab_nopad'].cpu().int())
 
             i += batch_size
 

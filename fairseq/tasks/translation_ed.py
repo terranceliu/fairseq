@@ -28,7 +28,7 @@ def load_langpair_dataset(
     combine, dataset_impl, upsample_primary,
     left_pad_source, left_pad_target, max_source_positions,
     max_target_positions, prepend_bos=False, load_alignments=False,
-    tgt_vocab_size=None, perfect_oracle=False, tgt_bow=False,
+    tgt_vocab_size=None, oracle=False, run_vp=False,
     vocab_task=None, use_roberta=False, ft_roberta=False,
 ):
     def split_exists(split, src, tgt, lang, data_path):
@@ -95,8 +95,8 @@ def load_langpair_dataset(
         max_target_positions=max_target_positions,
         align_dataset=align_dataset,
         tgt_vocab_size=tgt_vocab_size,
-        perfect_oracle=perfect_oracle,
-        tgt_bow=tgt_bow,
+        oracle=oracle,
+        run_vp=run_vp,
         vocab_task=vocab_task,
         use_roberta=use_roberta,
         ft_roberta=ft_roberta
@@ -152,9 +152,8 @@ class TranslationEDTask(TranslationTask):
                             help='amount to upsample primary dataset')
         parser.add_argument('--tgt-vocab-size', default=None, type=int,
                             help='target vocab size of efficient decoding')
-        parser.add_argument('--perfect_oracle', action='store_true',
-                            help='perfect oracle')
-        parser.add_argument('--tgt-bow', action='store_true',
+        parser.add_argument('--oracle', action='store_true')
+        parser.add_argument('--run-vp', action='store_true',
                             help='convert target vocab to bag of words')
         parser.add_argument('--use-roberta', action='store_true')
         parser.add_argument('--ft-roberta', action='store_true')
@@ -183,8 +182,8 @@ class TranslationEDTask(TranslationTask):
             max_target_positions=self.args.max_target_positions,
             load_alignments=self.args.load_alignments,
             tgt_vocab_size=self.args.tgt_vocab_size,
-            perfect_oracle=self.args.perfect_oracle,
-            tgt_bow=self.args.tgt_bow,
+            oracle=self.args.oracle,
+            run_vp=self.args.run_vp,
             vocab_task=self.vocab_task,
             use_roberta=self.args.use_roberta,
             ft_roberta=self.args.ft_roberta,

@@ -29,70 +29,8 @@ DEFAULT_MAX_TARGET_POSITIONS = 1024
 
 @register_model('transformer_ed')
 class TransformerEDModel(TransformerModel):
-    def __init__(self, encoder, decoder):
-        super().__init__(encoder, decoder)
-
-    @staticmethod
-    def add_args(parser):
-        """Add model-specific arguments to the parser."""
-        # fmt: off
-        parser.add_argument('--activation-fn',
-                            choices=utils.get_available_activation_fns(),
-                            help='activation function to use')
-        parser.add_argument('--dropout', type=float, metavar='D',
-                            help='dropout probability')
-        parser.add_argument('--attention-dropout', type=float, metavar='D',
-                            help='dropout probability for attention weights')
-        parser.add_argument('--activation-dropout', '--relu-dropout', type=float, metavar='D',
-                            help='dropout probability after activation in FFN.')
-        parser.add_argument('--encoder-embed-path', type=str, metavar='STR',
-                            help='path to pre-trained encoder embedding')
-        parser.add_argument('--encoder-embed-dim', type=int, metavar='N',
-                            help='encoder embedding dimension')
-        parser.add_argument('--encoder-ffn-embed-dim', type=int, metavar='N',
-                            help='encoder embedding dimension for FFN')
-        parser.add_argument('--encoder-layers', type=int, metavar='N',
-                            help='num encoder layers')
-        parser.add_argument('--encoder-attention-heads', type=int, metavar='N',
-                            help='num encoder attention heads')
-        parser.add_argument('--encoder-normalize-before', action='store_true',
-                            help='apply layernorm before each encoder block')
-        parser.add_argument('--encoder-learned-pos', action='store_true',
-                            help='use learned positional embeddings in the encoder')
-        parser.add_argument('--decoder-embed-path', type=str, metavar='STR',
-                            help='path to pre-trained decoder embedding')
-        parser.add_argument('--decoder-embed-dim', type=int, metavar='N',
-                            help='decoder embedding dimension')
-        parser.add_argument('--decoder-ffn-embed-dim', type=int, metavar='N',
-                            help='decoder embedding dimension for FFN')
-        parser.add_argument('--decoder-layers', type=int, metavar='N',
-                            help='num decoder layers')
-        parser.add_argument('--decoder-attention-heads', type=int, metavar='N',
-                            help='num decoder attention heads')
-        parser.add_argument('--decoder-learned-pos', action='store_true',
-                            help='use learned positional embeddings in the decoder')
-        parser.add_argument('--decoder-normalize-before', action='store_true',
-                            help='apply layernorm before each decoder block')
-        parser.add_argument('--share-decoder-input-output-embed', action='store_true',
-                            help='share decoder input and output embeddings')
-        parser.add_argument('--share-all-embeddings', action='store_true',
-                            help='share encoder, decoder and output embeddings'
-                                 ' (requires shared dictionary and embed dim)')
-        parser.add_argument('--no-token-positional-embeddings', default=False, action='store_true',
-                            help='if set, disables positional embeddings (outside self attention)')
-        parser.add_argument('--adaptive-softmax-cutoff', metavar='EXPR',
-                            help='comma separated list of adaptive softmax cutoff points. '
-                                 'Must be used with adaptive_loss criterion'),
-        parser.add_argument('--adaptive-softmax-dropout', type=float, metavar='D',
-                            help='sets adaptive softmax dropout for the tail projections')
-        # args for "Cross+Self-Attention for Transformer Models" (Peitz et al., 2019)
-        parser.add_argument('--no-cross-attention', default=False, action='store_true',
-                            help='do not perform cross-attention')
-        parser.add_argument('--cross-self-attention', default=False, action='store_true',
-                            help='perform cross+self-attention')
-        parser.add_argument('--layer-wise-attention', default=False, action='store_true',
-                            help='perform layer-wise attention (cross-attention or cross+self-attention)')
-        # fmt: on
+    def __init__(self, args, encoder, decoder):
+        super().__init__(args, encoder, decoder)
 
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
@@ -178,9 +116,15 @@ class TransformerEDDecoder(TransformerDecoder):
             x = self.output_layer(x)
 
             if self.efficient_decoding:
+                # target_vocab = target_vocab[0]
+                # tgt_vocab_embeddings = self.embed_tokens(target_vocab)
+                # tgt_vocab_embeddings = tgt_vocab_embeddings.repeat(len(x), 1, 1).permute(0, 2, 1)
+
                 tgt_vocab_embeddings = self.embed_tokens(target_vocab)
                 tgt_vocab_embeddings = tgt_vocab_embeddings.permute(0, 2, 1)
+
                 x = torch.bmm(x, tgt_vocab_embeddings)
+
 
         return x, extra
 

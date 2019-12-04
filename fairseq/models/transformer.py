@@ -558,11 +558,13 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         if not features_only:
             x = self.output_layer(x)
 
-            if extra_args['target_vocab'] is not None:
+            if 'target_vocab' in extra_args.keys() and extra_args['target_vocab'] is not None:
+                # import pdb
+                # pdb.set_trace()
                 tgt_vocab = extra_args['target_vocab']
 
                 x_final = torch.zeros(x.shape).cuda()
-                x_final[:] = x.min()  # -float('inf') doesn't work if you use smoothed xe
+                x_final[:] = x.min() # -float('inf')
 
                 helper_ix = torch.arange(tgt_vocab.shape[0]).unsqueeze(0).T.expand(tgt_vocab.shape)
                 # helper_ix = np.array([np.arange(tgt_vocab.shape[0]), ] * tgt_vocab.shape[1]).transpose()

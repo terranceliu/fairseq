@@ -49,6 +49,6 @@ class VocabPredTask(TranslationEDTask):
     def valid_step(self, sample, model, criterion, print_recall=False, get_logits=False):
         model.eval()
         with torch.no_grad():
-            loss, sample_size, logging_output = criterion(model, sample, print_recall=print_recall)
+            loss, sample_size, logging_output = criterion(model, sample, print_recall=False)
         return loss, sample_size, logging_output
 

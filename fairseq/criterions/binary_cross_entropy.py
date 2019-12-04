@@ -38,18 +38,6 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         else:
             weights = 1.
 
-        # size_ns = 10000
-        # mask = torch.zeros((len(target), size_ns)).long().cuda()
-        # mask = mask.random_(0, size_ns)
-        # for idx, tgt in enumerate(target):
-        #     positives = tgt.nonzero().flatten()
-        #     num_positives = len(positives)
-        #     mask[idx, :num_positives] = positives
-        #
-        # logits = logits.gather(dim=-1, index=mask)
-        # weights = weights.gather(dim=-1, index=mask)
-        # target = target.gather(dim=-1, index=mask)
-
         loss = F.binary_cross_entropy_with_logits(logits, target, reduce=False)
         loss = loss * weights
 
@@ -65,7 +53,7 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         }
 
         if print_recall:
-            recall = self.get_recall(logits, target, top_k=500)
+            recall = self.get_recall(logits, target, top_k=3000)
             logging_output['recall'] = utils.item(recall.data) if reduce else recall.data
             print(recall.data.float() / logits.size(0))
 
@@ -73,36 +61,27 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
 
 
     def get_recall(self, lprobs, target, top_k=1000):
-        top = lprobs.sort(descending=True)[1][:, :top_k]
-        tgt_vocab = target.nonzero()
+        lprobs = lprobs.sort(descending=True)[1][:, :top_k]
+        # tgt_vocab = target.nonzero()
+
+        pdb.set_trace()
 
         totals = torch.zeros(len(lprobs)).cuda()
         corrects = torch.zeros(len(lprobs)).cuda()
-        for tgt in tgt_vocab:
-            idx = tgt[0]
-            token = tgt[1]
+        for idx, tgt in enumerate(target):
+            for token in tgt:
+                totals[idx] += 1
+                if token.int() in lprobs[idx]:
+                    corrects[idx] += 1
 
-            if token <= 3:
-                continue
+        k = lprobs.shape[1]
 
-            totals[idx] += 1
+        recall = (corrects / totals).mean().item() * 100
+        perfect_recall = (corrects == totals).float().mean().item() * 100
 
+        print("k: {}, recall: {:.3f}, perfect recall: {:.3f}".format(k, recall, perfect_recall))
 
-            # top_tokens = torch.arange(1000).cuda()
-            # ix = top_tokens.view(1, -1).eq(top[idx].view(-1, 1)).sum(0) == 0
-            # extra_tokens = top_tokens[ix]
-            # vocab_tokens = torch.cat((top[idx], extra_tokens))[:1000]
-
-            # if token < top_k:
-            if token in top[idx]:
-            # if token in top[idx] or token < 500:
-            # if token in vocab_tokens:
-                corrects[idx] += 1
-
-        recalls = corrects / totals
-        # recalls = corrects == totals
-
-        return recalls.sum()
+        return (corrects / totals).sum()
 
 
     @staticmethod

@@ -8,10 +8,12 @@ Translate pre-processed data with a trained model.
 """
 
 import torch
+import numpy as np
 
 from fairseq import bleu, checkpoint_utils, options, progress_bar, tasks, utils
 from fairseq.meters import StopwatchMeter, TimeMeter
 
+import pdb
 
 def main(args):
     assert args.path is not None, '--path required for generation!'
@@ -92,7 +94,17 @@ def main(args):
 
     count_total = 0.0
     count_problems = 0.0
+    sample_ids = []
     lengths = []
+
+    if args.load_sample_id:
+        assert not args.split_by_recall
+
+    if 'tgt_vocab_size' in vars(args).keys():
+        assert args.tgt_vocab_size == args.tgt_vocab_size_gen
+    sample_id_path = "sample_ids/{}/{}_vocab{}_tol{}.pt".format(
+                    args.data, args.gen_subset, args.tgt_vocab_size_gen, args.recall_tolerance
+                )
 
     with progress_bar.build_progress_bar(args, itr) as t:
         wps_meter = TimeMeter()
@@ -110,29 +122,43 @@ def main(args):
             num_generated_tokens = sum(len(h[0]['tokens']) for h in hypos)
             gen_timer.stop(num_generated_tokens)
 
-            # non_perfect_recall = []
-            # for i in range(len(sample['target_old'])):
-            #     a = sample['net_input']['target_vocab'][i]
-            #     b = sample['target_old'][i]
-            #
-            #     for token in b:
-            #         if token not in a:
-            #             non_perfect_recall.append(i)
-            #             break
-            #
-            # count_total += len(sample['target_old'])
-            # count_problems += len(non_perfect_recall)
+            if args.split_by_recall:
+                imperfect_recall = []
+                for i in range(len(sample['target_old'])):
+                    num_missing = 0
+                    a = sample['net_input']['target_vocab'][i]
+                    b = sample['target_old'][i]
 
-            # import pdb
-            # pdb.set_trace()
+                    for token in b:
+                        if token not in a:
+                            num_missing += 1
+                            if num_missing > args.recall_tolerance:
+                                imperfect_recall.append(i)
+                                break
+
+                count_total += len(sample['target_old'])
+                count_problems += len(imperfect_recall)
+
+            if args.load_sample_id:
+                sample_ids = torch.load(sample_id_path)
 
             for i, sample_id in enumerate(sample['id'].tolist()):
-                # if i not in non_perfect_recall:
+                if args.split_by_recall:
+                    if i in imperfect_recall:
+                        continue
+
+                    lengths.append((sample['target_old'][i] > 3).sum().item())
+                    sample_ids.append(sample_id)
+                elif args.load_sample_id:
+                    if sample_id in sample_ids:
+                        continue
+
+                # if (sample['target_old'][i] >= 3).sum().item() not in [32, 33, 34, 35, 36, 37]:
+                # if (sample['target_old'][i] > 3).sum().item() > 20:
                 #     continue
                 #
-                # if (sample['target_old'][i] >= 3).sum().item() not in [29, 30, 31]:
-                #     continue
-                # lengths.append((sample['target_old'][i] >= 3).sum().item())
+
+
 
                 has_target = sample['target'] is not None
 
@@ -204,20 +230,27 @@ def main(args):
             t.log({'wps': round(wps_meter.avg)})
             num_sentences += sample['nsentences']
 
-    # import numpy as np
-    # print(count_problems / count_total)
-    # print(np.array(lengths).mean())
-
     print('| Translated {} sentences ({} tokens) in {:.1f}s ({:.2f} sentences/s, {:.2f} tokens/s)'.format(
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))
     if has_target:
         print('| Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
+
+    print(count_problems / count_total)
+    print(np.array(lengths).mean())
+
+
+    torch.save(sample_ids, sample_id_path)
+    pdb.set_trace()
 
     return scorer
 
 
 def cli_main():
     parser = options.get_generation_parser()
+    parser.add_argument('--tgt-vocab-size-gen', type=int)
+    parser.add_argument('--split-by-recall', action='store_true')
+    parser.add_argument('--load-sample-id', action='store_true')
+    parser.add_argument('--recall-tolerance', type=int, default=0)
     args = options.parse_args_and_arch(parser)
     main(args)
 
