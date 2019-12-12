@@ -404,7 +404,6 @@ class LanguagePairDatasetED(LanguagePairDataset):
                     remaining_tokens = self.tgt_vocab[i][ix]
                     vocab_tokens = torch.cat((self.extra_bpe_tokens, remaining_tokens))[:self.tgt_vocab_size]
                     self.tgt_vocab[i] = vocab_tokens
-
             elif True: #self.split in ['train']:
                 for i in tqdm(range(len(self.tgt))):
                     tgt_vocab_true = torch.unique(self.tgt[i])
