@@ -133,7 +133,8 @@ def train(args, trainer, task, epoch_itr):
             else:
                 extra_meters[k].update(v)
             stats[k] = extra_meters[k].avg
-        # progress.log(stats, tag='train', step=stats['num_updates'])
+        # TODO: TERRANCE
+        progress.log(stats, tag='train', step=stats['num_updates'])
 
         # ignore the first mini-batch in words-per-second and updates-per-second calculation
         if i == 0:

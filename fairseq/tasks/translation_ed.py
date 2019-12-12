@@ -28,8 +28,7 @@ def load_langpair_dataset(
     combine, dataset_impl, upsample_primary,
     left_pad_source, left_pad_target, max_source_positions,
     max_target_positions, prepend_bos=False, load_alignments=False,
-    tgt_vocab_size=None, oracle=False, run_vp=False,
-    vocab_task=None, use_roberta=False, ft_roberta=False,
+    tgt_vocab_size=None, oracle=False, num_extra_bpe=0,
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
@@ -96,10 +95,7 @@ def load_langpair_dataset(
         align_dataset=align_dataset,
         tgt_vocab_size=tgt_vocab_size,
         oracle=oracle,
-        run_vp=run_vp,
-        vocab_task=vocab_task,
-        use_roberta=use_roberta,
-        ft_roberta=ft_roberta
+        num_extra_bpe=num_extra_bpe,
     )
 
 @register_task('translation_ed')
@@ -153,10 +149,7 @@ class TranslationEDTask(TranslationTask):
         parser.add_argument('--tgt-vocab-size', default=None, type=int,
                             help='target vocab size of efficient decoding')
         parser.add_argument('--oracle', action='store_true')
-        parser.add_argument('--run-vp', action='store_true',
-                            help='convert target vocab to bag of words')
-        parser.add_argument('--use-roberta', action='store_true')
-        parser.add_argument('--ft-roberta', action='store_true')
+        parser.add_argument('--num-extra-bpe', default=0, type=int)
         # fmt: on
 
     def __init__(self, args, src_dict, tgt_dict):
@@ -170,8 +163,6 @@ class TranslationEDTask(TranslationTask):
         # infer langcode
         src, tgt = self.args.source_lang, self.args.target_lang
 
-        self.vocab_task = TASK_REGISTRY['vocab_pred'].setup_task(self.args)
-
         self.datasets[split] = load_langpair_dataset(
             data_path, split, src, self.src_dict, tgt, self.tgt_dict,
             combine=combine, dataset_impl=self.args.dataset_impl,
@@ -183,8 +174,5 @@ class TranslationEDTask(TranslationTask):
             load_alignments=self.args.load_alignments,
             tgt_vocab_size=self.args.tgt_vocab_size,
             oracle=self.args.oracle,
-            run_vp=self.args.run_vp,
-            vocab_task=self.vocab_task,
-            use_roberta=self.args.use_roberta,
-            ft_roberta=self.args.ft_roberta,
+            num_extra_bpe=self.args.num_extra_bpe,
         )

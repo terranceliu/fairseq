@@ -153,12 +153,6 @@ def main(args):
                     if sample_id in sample_ids:
                         continue
 
-                # if (sample['target_old'][i] >= 3).sum().item() not in [32, 33, 34, 35, 36, 37]:
-                # if (sample['target_old'][i] > 3).sum().item() > 20:
-                #     continue
-                #
-
-
 
                 has_target = sample['target'] is not None
 
@@ -235,12 +229,11 @@ def main(args):
     if has_target:
         print('| Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
 
-    print(count_problems / count_total)
-    print(np.array(lengths).mean())
+    # print(count_problems / count_total)
+    # print(np.array(lengths).mean())
 
-
-    torch.save(sample_ids, sample_id_path)
-    pdb.set_trace()
+    # torch.save(sample_ids, sample_id_path)
+    # pdb.set_trace()
 
     return scorer
 
