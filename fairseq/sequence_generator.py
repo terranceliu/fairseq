@@ -299,18 +299,19 @@ class SequenceGenerator(object):
                 if target_vocab is not None:
                     target_vocab = target_vocab.index_select(0, reorder_state)
 
+            if target_vocab is not None:
+                tokens[:, step] = target_vocab.gather(dim=-1, index=tokens[:, step].unsqueeze(-1)).squeeze()
+
             lprobs, avg_attn_scores = model.forward_decoder(
                 tokens[:, :step + 1], encoder_outs, temperature=self.temperature, target_vocab=target_vocab
             )
 
-            if lprobs.shape[1] != self.vocab_size:
-                temp = torch.zeros((lprobs.shape[0], self.vocab_size)).cuda()
-                temp[:] = -math.inf
-                helper_ix = torch.arange(target_vocab.shape[0]).unsqueeze(0).T.expand(target_vocab.shape)
-                temp[helper_ix, target_vocab] = lprobs
-                lprobs = temp
-
-            # pdb.set_trace()
+            # if lprobs.shape[1] != self.vocab_size:
+            #     temp = torch.zeros((lprobs.shape[0], self.vocab_size)).cuda()
+            #     temp[:] = -math.inf
+            #     helper_ix = torch.arange(target_vocab.shape[0]).unsqueeze(0).T.expand(target_vocab.shape)
+            #     temp[helper_ix, target_vocab] = lprobs
+            #     lprobs = temp
 
             lprobs[:, self.pad] = -math.inf  # never select pad
             lprobs[:, self.unk] -= self.unk_penalty  # apply unk penalty
@@ -391,15 +392,9 @@ class SequenceGenerator(object):
 
             cand_scores, cand_indices, cand_beams = self.search.step(
                 step,
-                lprobs.view(bsz, -1, self.vocab_size),
-                scores.view(bsz, beam_size, -1)[:, :, :step],
+                lprobs.view(bsz, -1, lprobs.shape[1]),
+                scores.view(bsz, beam_size, -1)[:, :, :step]
             )
-
-            # cand_scores, cand_indices, cand_beams = self.search.step(
-            #     step,
-            #     lprobs.view(bsz, -1, lprobs.shape[1]),
-            #     scores.view(bsz, beam_size, -1)[:, :, :step],
-            # )
 
             # cand_bbsz_idx contains beam indices for the top candidate
             # hypotheses, with a range of values: [0, bsz*beam_size),
