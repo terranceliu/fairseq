@@ -201,7 +201,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
         shuffle=True, input_feeding=True,
         remove_eos_from_source=False, append_eos_to_target=False,
         align_dataset=None,
-        tgt_vocab_size=None, oracle=False, num_extra_bpe=0,
+        tgt_vocab_size=None, oracle=False, vocab_task=None, num_extra_bpe=0,
     ):
         super().__init__(src, src_sizes, src_dict,
             tgt=tgt, tgt_sizes=tgt_sizes, tgt_dict=tgt_dict,
@@ -219,6 +219,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
         self.tgt_vocab_size = tgt_vocab_size
         self.oracle = oracle
+        self.vocab_task = vocab_task
         self.num_extra_bpe = num_extra_bpe
 
         self.tgt_old = self.tgt
