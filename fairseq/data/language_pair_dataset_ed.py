@@ -249,16 +249,15 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
                 self.generate_top_logits(path)
                 self.generate_tgt_vocab_vp()
-                self.generate_tgt_mapped_vp()
+                self.generate_tgt_mapped_vp()0
 
+                # self.get_recall(self.tgt_vocab, self.tgt_old)
                 # self.get_recall(self.tgt_vocab, self.tgt)
                 # pdb.set_trace()
 
         # DEBUGGING
         # self.test_get_bpe_target()
         # self.verify_tgt_mapped_vp()
-        # pdb.set_trace()
-
 
     def __getitem__(self, index):
         example = super().__getitem__(index)
@@ -267,8 +266,8 @@ class LanguagePairDatasetED(LanguagePairDataset):
             example['target_vocab'] = self.tgt_vocab[index]
             example['target_mapped'] = self.tgt_mapped[index]
 
-        # if self.split == 'train' and np.random.rand() < 0.5:
-        #     prob = np.random.rand()
+        # if self.split == 'train': # and np.random.rand() < 0.5:
+        #     prob = 0.1
         #     target = example['target']
         #     tgt_vocab = example['target_vocab']
         #     mask = np.random.choice(a=[True, False], size=len(target), p=[prob, 1 - prob])
@@ -405,7 +404,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
                     remaining_tokens = self.tgt_vocab[i][ix]
                     vocab_tokens = torch.cat((self.extra_bpe_tokens, remaining_tokens))[:self.tgt_vocab_size]
                     self.tgt_vocab[i] = vocab_tokens
-            elif True: #self.split in ['train']:
+            else: #elif self.split in ['train']:
                 for i in tqdm(range(len(self.tgt))):
                     tgt_vocab_true = torch.unique(self.tgt[i])
                     ix = self.tgt_vocab[i].view(1, -1).eq(tgt_vocab_true.view(-1, 1)).sum(0) == 0

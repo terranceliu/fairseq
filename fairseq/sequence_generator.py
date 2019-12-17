@@ -12,6 +12,7 @@ from fairseq.data import data_utils
 from fairseq.models import FairseqIncrementalDecoder
 
 import pdb
+import pdb
 
 class SequenceGenerator(object):
     def __init__(
