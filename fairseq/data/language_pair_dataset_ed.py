@@ -249,7 +249,7 @@ class LanguagePairDatasetED(LanguagePairDataset):
 
                 self.generate_top_logits(path)
                 self.generate_tgt_vocab_vp()
-                self.generate_tgt_mapped_vp()0
+                self.generate_tgt_mapped_vp()
 
                 # self.get_recall(self.tgt_vocab, self.tgt_old)
                 # self.get_recall(self.tgt_vocab, self.tgt)
