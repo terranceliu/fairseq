@@ -176,7 +176,8 @@ def main(args):
 
                 if not args.quiet:
                     if src_dict is not None:
-                        print('S-{}\t{}'.format(sample_id, src_str))
+                        #print('S-{}\t{}'.format(sample_id, src_str))
+                        print('S-{',sample_id,'}\t{', src_str,'}')
                     if has_target:
                         print('T-{}\t{}'.format(sample_id, target_str))
 
